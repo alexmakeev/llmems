@@ -7,7 +7,6 @@
 // ============================================================
 export { MemManager, InMemoryMemStore } from './services/mem-manager.js';
 export { PostgresMemStore } from './services/postgres-mem-store.js';
-export { ChatManager } from './services/chat-manager.js';
 export type {
   IMemStore,
   MemChunk,

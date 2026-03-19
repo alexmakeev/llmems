@@ -154,26 +154,6 @@ if (result.ok) {
 await memStore.close();
 ```
 
-### Multi-user with ChatManager
-
-```typescript
-import { ChatManager } from '@alexmakeev/llmems';
-
-const manager = new ChatManager({
-  postgresUrl: process.env.POSTGRES_URL!,
-  openRouterApiKey: process.env.OPENROUTER_API_KEY!,
-  systemPrompt: 'You are a helpful assistant.',
-  model: 'google/gemini-2.5-flash',
-});
-
-// Each contextId gets its own isolated memory
-const chat = await manager.getChat('user-123');
-const result = await chat.prompt('Hello!');
-
-// On shutdown
-await manager.shutdown();
-```
-
 ## API Reference
 
 ### `OpenRouterChat`
@@ -231,25 +211,6 @@ In-process storage — no dependencies, no persistence. Suitable for testing and
 
 ```typescript
 const store = new InMemoryMemStore();
-```
-
-### `ChatManager`
-
-Manages one `OpenRouterChat` per conversation context, each with its own `PostgresMemStore`. Designed for multi-user bots.
-
-```typescript
-const manager = new ChatManager({ postgresUrl, openRouterApiKey, systemPrompt, model });
-
-const chat = await manager.getChat('some-context-id');
-
-// Helper for Telegram-style context IDs:
-const contextId = ChatManager.getContextId(chatId, chatType, threadId);
-
-// Per-context dynamic behavior instructions:
-await manager.setBehaviorInstructions('Be concise.', contextId);
-const instructions = await manager.getBehaviorInstructions(contextId);
-
-await manager.shutdown(); // close all DB pools
 ```
 
 ### Key interfaces
