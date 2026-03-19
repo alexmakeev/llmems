@@ -1,4 +1,4 @@
-// src/librarian/types.ts
+// src/types.ts
 // Librarian types using production conventions
 
 import { z } from 'zod';

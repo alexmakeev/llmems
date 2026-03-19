@@ -6,8 +6,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ok, err } from './shared/result.js';
 import type { Result } from './shared/result.js';
-import type { RecallNode, MessageEntry, MemChunk, RecallResult } from './types.js';
-import type { IMemStore } from './types.js';
+import type { RecallNode, MessageEntry, MemChunk, RecallResult, IMemStore } from './types.js';
 import { retrySleep } from './retry-sleep.js';
 
 // ============================================================
@@ -137,7 +136,7 @@ export interface OpenRouterChatOptions {
     schema: z.ZodSchema;
     systemInstructions?: string;
   };
-  /** Debounce delay (ms) before background summarization runs. Default: 60000 (60s). */
+  /** Debounce delay (ms) before background summarization runs. Default: 600000 (10 min). */
   backgroundDebounceMs?: number;
   /** Optional callback to retrieve behavior instructions for the LLM context */
   getBehaviorInstructions?: () => Promise<string>;
@@ -272,9 +271,7 @@ const BACKGROUND_SUMMARIZATION_FORMAT: ResponseFormat = {
 };
 
 /** System prompt for the chat assistant (plain text, no topic detection) */
-const CHAT_SYSTEM_PROMPT = `You are a personal AI assistant in a continuous conversation. You are the user's close friend — warm, supportive, emotionally engaged.
-
-You MUST respond in the same language the user writes in. If the user writes in Russian, respond in Russian. If in English, respond in English.`;
+const CHAT_SYSTEM_PROMPT = 'You are a helpful assistant.';
 
 // ============================================================
 // OpenRouterChat class
@@ -1212,8 +1209,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
    * Used for debug logging to categorize LLM calls.
    */
   private inferCallType(systemContent: string): string {
-    if (systemContent.includes('conversation analyst')) return 'background_summarization';
-    if (systemContent.includes('NEVER delete existing ideas')) return 'general_summary_update';
+    // TODO: re-enable when general summary is restored
     if (systemContent.includes('Respond naturally in plain text')) return 'ask_query';
     return 'main_response';
   }
