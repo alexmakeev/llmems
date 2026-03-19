@@ -4,7 +4,7 @@
 
 import { Pool } from 'pg';
 import pgvector from 'pgvector/pg';
-import type { MemChunk, Mem, MemContextData, IMemStore } from '../types.ts';
+import type { MemChunk, Mem, MemContextData, IMemStore } from '../types.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal helpers

@@ -4,11 +4,11 @@
 import { z } from 'zod';
 import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { ok, err } from './shared/result.ts';
-import type { Result } from './shared/result.ts';
-import type { RecallNode, MessageEntry, MemChunk, RecallResult } from './types.ts';
-import type { IMemStore } from './types.ts';
-import { retrySleep } from './retry-sleep.ts';
+import { ok, err } from './shared/result.js';
+import type { Result } from './shared/result.js';
+import type { RecallNode, MessageEntry, MemChunk, RecallResult } from './types.js';
+import type { IMemStore } from './types.js';
+import { retrySleep } from './retry-sleep.js';
 
 // ============================================================
 // Tool calling types
@@ -75,8 +75,8 @@ interface EmbeddingValue {
 export interface IEmbeddingService {
   embed(text: string): Promise<Result<EmbeddingValue, { message: string }>>;
 }
-import { MemManager, InMemoryMemStore } from './services/mem-manager.ts';
-import { createMemoryLogger } from './logging.ts';
+import { MemManager, InMemoryMemStore } from './services/mem-manager.js';
+import { createMemoryLogger } from './logging.js';
 
 // ============================================================
 // LLMem interface — minimal contract for memory backend

@@ -1,20 +1,35 @@
 {
-  "name": "llmems",
+  "name": "@alexmakeev/llmems",
   "version": "0.1.0",
+  "description": "Long-term memory for LLM agents — Zettelkasten-style atomic summarization with PostgreSQL",
+  "author": "Alex Makeev",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexmakeev/llmems.git"
+  },
+  "keywords": ["llm", "memory", "zettelkasten", "ai", "agents", "postgresql", "pgvector"],
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
   },
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
-    "test:watch": "vitest watch",
-    "typecheck": "tsc --noEmit"
+    "test:watch": "vitest watch"
   },
   "dependencies": {
-    "@types/pg": "^8.18.0",
     "chrono-node": "^2.9.0",
     "dotenv": "^16.4.5",
     "neverthrow": "^8.2.0",
@@ -26,6 +41,7 @@
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/pg": "^8.18.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

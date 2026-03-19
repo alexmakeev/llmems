@@ -2,7 +2,7 @@
 // Librarian types using production conventions
 
 import { z } from 'zod';
-import type { Result } from './shared/result.ts';
+import type { Result } from './shared/result.js';
 
 /**
  * Edge relationship types for knowledge graph

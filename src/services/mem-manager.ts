@@ -3,7 +3,7 @@
 // closed mem summaries, and general summary for long-term context.
 
 import { randomUUID } from 'node:crypto';
-import type { MemChunk, Mem, MemContextData, IMemStore } from '../types.ts';
+import type { MemChunk, Mem, MemContextData, IMemStore } from '../types.js';
 
 /** Generate a chunk ID — used when no external ID is provided */
 const generateChunkId = (): string => randomUUID();

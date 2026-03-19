@@ -4,7 +4,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { LogContext } from './types.ts';
+import type { LogContext } from './types.js';
 
 /** Global async local storage for log context */
 export const logStore = new AsyncLocalStorage<LogContext>();

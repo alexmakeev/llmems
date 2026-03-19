@@ -1,7 +1,7 @@
 // src/memory/utils/temporal.ts
 // Utility helpers for temporal reasoning over KnowledgeNode fields.
 
-import type { KnowledgeNode } from '../types.ts';
+import type { KnowledgeNode } from '../types.js';
 
 /**
  * Return the most semantically meaningful date for a KnowledgeNode.

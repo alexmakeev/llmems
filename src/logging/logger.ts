@@ -4,8 +4,8 @@
  */
 
 import pino from 'pino';
-import { logStore } from './context.ts';
-import type { ILogger } from './types.ts';
+import { logStore } from './context.js';
+import type { ILogger } from './types.js';
 
 /** Pino log level, configurable via LOG_LEVEL env var */
 const LOG_LEVEL = process.env['LOG_LEVEL'] ?? 'info';

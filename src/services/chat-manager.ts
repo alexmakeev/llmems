@@ -1,13 +1,12 @@
 // src/services/chat-manager.ts
 // ChatManager: manages per-user OpenRouterChat instances with PostgreSQL-backed memory.
 
-import { OpenRouterChat } from '../openrouter-chat.ts';
-import { PostgresMemStore } from './postgres-mem-store.ts';
-import { DEFAULT_SYSTEM_PROMPT } from '../prompts/altme.ts';
-import { ok } from '../shared/result.ts';
-import type { LLMem, StoreResult, MemoryError } from '../openrouter-chat.ts';
-import type { Result } from '../shared/result.ts';
-import type { RecallMemoryResult } from '../openrouter-chat.ts';
+import { OpenRouterChat } from '../openrouter-chat.js';
+import { PostgresMemStore } from './postgres-mem-store.js';
+import { ok } from '../shared/result.js';
+import type { LLMem, StoreResult, MemoryError } from '../openrouter-chat.js';
+import type { Result } from '../shared/result.js';
+import type { RecallMemoryResult } from '../openrouter-chat.js';
 
 // ── Minimal LLMem implementation ──────────────────────────────────────────────
 
@@ -64,7 +63,7 @@ export class ChatManager {
   }) {
     this.postgresUrl = options.postgresUrl;
     this.openRouterApiKey = options.openRouterApiKey;
-    this.systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+    this.systemPrompt = options.systemPrompt ?? '';
     this.model = options.model ?? 'google/gemini-2.5-flash';
   }
 

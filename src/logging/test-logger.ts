@@ -4,7 +4,7 @@
  */
 
 import pino from 'pino';
-import type { LogEntry, LogLevel } from './types.ts';
+import type { LogEntry, LogLevel } from './types.js';
 
 /**
  * Test helper that captures log entries for assertions.
