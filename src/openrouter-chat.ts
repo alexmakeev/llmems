@@ -193,27 +193,28 @@ interface ResponseFormat {
   };
 }
 
-/** JSON schema for general summary update */
-const GENERAL_SUMMARY_UPDATE_FORMAT: ResponseFormat = {
-  type: 'json_schema',
-  json_schema: {
-    name: 'general_summary_update',
-    strict: true,
-    schema: {
-      type: 'object',
-      properties: {
-        general_summary: { type: 'string' },
-      },
-      required: ['general_summary'],
-      additionalProperties: false,
-    },
-  },
-};
-
-/** Zod schema for general summary update result */
-const GeneralSummaryUpdateSchema = z.object({
-  general_summary: z.string(),
-});
+// TODO: re-enable general summary when memory is mature
+// /** JSON schema for general summary update */
+// const GENERAL_SUMMARY_UPDATE_FORMAT: ResponseFormat = {
+//   type: 'json_schema',
+//   json_schema: {
+//     name: 'general_summary_update',
+//     strict: true,
+//     schema: {
+//       type: 'object',
+//       properties: {
+//         general_summary: { type: 'string' },
+//       },
+//       required: ['general_summary'],
+//       additionalProperties: false,
+//     },
+//   },
+// };
+//
+// /** Zod schema for general summary update result */
+// const GeneralSummaryUpdateSchema = z.object({
+//   general_summary: z.string(),
+// });
 
 /** Zod schema for background summarization LLM result */
 const BackgroundSummarizationSchema = z.object({
@@ -696,9 +697,10 @@ export class OpenRouterChat {
     }
 
     // Layer 2: General summary
-    if (contextData.generalSummary.length > 0) {
-      systemParts.push(`\n\n## Conversation history (general summary)\n\n${contextData.generalSummary}`);
-    }
+    // TODO: re-enable general summary when memory is mature
+    // if (contextData.generalSummary.length > 0) {
+    //   systemParts.push(`\n\n## Conversation history (general summary)\n\n${contextData.generalSummary}`);
+    // }
 
     // Layer 3: Recent closed mems (N-2, N-1) — summaries only
     if (contextData.recentClosedMems.length > 0) {
@@ -803,9 +805,10 @@ export class OpenRouterChat {
    * LLM Call #2: Update general summary (only if topics found)
    */
   private async backgroundSummarize(chunks: MemChunk[], contextId: string): Promise<BackgroundResult> {
-    // Take snapshot of current state
-    const contextData = await this.memManager.getContextData(contextId);
-    const currentGeneralSummary = contextData.generalSummary;
+    // TODO: re-enable general summary when memory is mature
+    // Take snapshot of current state (needed for general summary)
+    // const contextData = await this.memManager.getContextData(contextId);
+    // const currentGeneralSummary = contextData.generalSummary;
 
     // Get only the last closed mem — for context that the first chunks may be its tail
     const lastClosedTopic = await this.memManager.getLastClosedMem(contextId);
@@ -877,38 +880,39 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     topics = topics.filter(t => t.chunkIds.length > 0);
 
     // LLM Call #2: Update general summary (only if topics were found)
-    let newGeneralSummary: string | null = null;
-    if (topics.length >= 1) {
-      const topicSummariesText = topics.map((t, i) => `${i + 1}. ${t.summary}`).join('\n');
-
-      const summaryPrompt = currentGeneralSummary.length > 0
-        ? `Existing general summary:\n${currentGeneralSummary}\n\nNew topic summaries to merge:\n${topicSummariesText}\n\nMerge new topic summaries into the general summary. Each idea = ONE line. NEVER delete existing ideas. Append new ones.`
-        : `Create a general summary from these topic summaries:\n${topicSummariesText}\n\nEach idea = ONE line.`;
-
-      const summaryResult = await this.callOpenRouter(
-        'Merge new topic summaries into general summary. Each idea = ONE line. NEVER delete existing ideas. Append new ones.',
-        [{ role: 'user', content: summaryPrompt }],
-        GENERAL_SUMMARY_UPDATE_FORMAT,
-        0, // temperature=0 for deterministic summary updates
-      );
-
-      if (summaryResult.ok) {
-        const summaryParsed = GeneralSummaryUpdateSchema.safeParse(safeJsonParse(summaryResult.value));
-        if (summaryParsed.success) {
-          const candidate = summaryParsed.data.general_summary;
-          // Guard against information loss
-          if (currentGeneralSummary.length > 0 && candidate.length < currentGeneralSummary.length * 0.8) {
-            this.log.warn(
-              { oldLen: currentGeneralSummary.length, newLen: candidate.length },
-              'backgroundSummarize: LLM shrunk summary by >20%, appending instead',
-            );
-            newGeneralSummary = currentGeneralSummary + '\n' + topics.map(t => t.summary).join('\n');
-          } else {
-            newGeneralSummary = candidate;
-          }
-        }
-      }
-    }
+    // TODO: re-enable general summary when memory is mature
+    const newGeneralSummary: string | null = null;
+    // if (topics.length >= 1) {
+    //   const topicSummariesText = topics.map((t, i) => `${i + 1}. ${t.summary}`).join('\n');
+    //
+    //   const summaryPrompt = currentGeneralSummary.length > 0
+    //     ? `Existing general summary:\n${currentGeneralSummary}\n\nNew topic summaries to merge:\n${topicSummariesText}\n\nMerge new topic summaries into the general summary. Each idea = ONE line. NEVER delete existing ideas. Append new ones.`
+    //     : `Create a general summary from these topic summaries:\n${topicSummariesText}\n\nEach idea = ONE line.`;
+    //
+    //   const summaryResult = await this.callOpenRouter(
+    //     'Merge new topic summaries into general summary. Each idea = ONE line. NEVER delete existing ideas. Append new ones.',
+    //     [{ role: 'user', content: summaryPrompt }],
+    //     GENERAL_SUMMARY_UPDATE_FORMAT,
+    //     0, // temperature=0 for deterministic summary updates
+    //   );
+    //
+    //   if (summaryResult.ok) {
+    //     const summaryParsed = GeneralSummaryUpdateSchema.safeParse(safeJsonParse(summaryResult.value));
+    //     if (summaryParsed.success) {
+    //       const candidate = summaryParsed.data.general_summary;
+    //       // Guard against information loss
+    //       if (currentGeneralSummary.length > 0 && candidate.length < currentGeneralSummary.length * 0.8) {
+    //         this.log.warn(
+    //           { oldLen: currentGeneralSummary.length, newLen: candidate.length },
+    //           'backgroundSummarize: LLM shrunk summary by >20%, appending instead',
+    //         );
+    //         newGeneralSummary = currentGeneralSummary + '\n' + topics.map(t => t.summary).join('\n');
+    //       } else {
+    //         newGeneralSummary = candidate;
+    //       }
+    //     }
+    //   }
+    // }
 
     // Generate Matryoshka embeddings for each topic
     const topicsWithEmbeddings = await Promise.all(

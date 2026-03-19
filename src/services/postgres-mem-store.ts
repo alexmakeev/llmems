@@ -252,7 +252,7 @@ export class PostgresMemStore implements IMemStore {
   }
 
   /** Maximum number of closed mems loaded in buildMemContext to prevent unbounded queries. */
-  private static readonly BUILD_CONTEXT_MEM_LIMIT = 10;
+  private static readonly BUILD_CONTEXT_MEM_LIMIT = 100;
 
   async buildMemContext(contextId: string): Promise<MemContextData> {
     const [activeChunks, allClosed, generalSummary] = await Promise.all([
