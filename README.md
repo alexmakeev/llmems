@@ -52,6 +52,41 @@ Background (after debounce, default 10 min):
 
 **The Zettelkasten analogy:** each mem is like an atomic note card — one topic, a clear summary. When you ask something, the relevant cards are pulled from the archive and placed in front of the LLM, just like a researcher pulling relevant notes before writing.
 
+> **Not a chat history.** `llmems` does not store raw conversation logs and replay them. It compacts conversations into structured, summarized memories — preserving facts while using a fraction of the tokens that verbatim history would require.
+
+## Memory in practice
+
+### How memory works
+
+The system operates transparently during conversation pauses:
+
+1. **Conversation flows normally** — user talks to the bot, bot responds
+2. **Background compaction** — when there's a pause (default: 10 min of silence), the system automatically summarizes the conversation into atomic mems. Each mem is 1-2 sentences capturing key facts
+3. **Growing context** — mems accumulate over time. On each new message, the last 500 mems are included in the prompt alongside semantically recalled mems, giving the bot a rich history
+4. **User doesn't notice** — compaction happens in the background; the experience is seamless
+
+### Token economics
+
+- Each mem ≈ 15–26 tokens (depending on language)
+- 500 mems ≈ 8–13k tokens — fits comfortably in modern context windows
+- 500 mems represents roughly a week of intensive daily conversations
+- Each context ID (mem store) has its own independent history, so multiple topics can each hold 500 mems independently
+
+### Beyond 500 mems
+
+When a conversation accumulates more than 500 mems, older ones are no longer included in the context window. The system continues to work — it just loses the oldest memories. We're working on infinite memory through hierarchical summarization.
+
+Current best practice: keep separate context IDs for separate topics, so each stays well under the limit.
+
+### Configuring the mem limit
+
+```bash
+# Default: 500
+export LLMEMS_MAX_MEMS=500
+```
+
+Or set it per instance via the mem store — 500 is the default used by `PostgresMemStore.getClosedMems()`.
+
 ## Quick Start
 
 ### Installation
