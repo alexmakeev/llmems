@@ -13,6 +13,8 @@ export type {
   MemChunk,
   Mem,
   MemContextData,
+  RecallNode,
+  RecallEdge,
 } from './types.js';
 
 // ============================================================
@@ -22,7 +24,19 @@ export { OpenRouterChat } from './openrouter-chat.js';
 export type {
   OpenRouterChatOptions,
   ChatResponse,
+  ToolDefinition,
+  ChatResponseWithTools,
+  LLMem,
+  StoreResult,
+  MemoryError,
+  RecallMemoryResult,
 } from './openrouter-chat.js';
+
+// ============================================================
+// Result type utilities
+// ============================================================
+export type { Result } from './shared/result.js';
+export { ok, err } from './shared/result.js';
 
 // ============================================================
 // Config
