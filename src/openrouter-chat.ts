@@ -830,7 +830,16 @@ SPLITTING CHECK: If a mem exceeds 6 chunks, verify the subject didn't shift midw
 
 The LAST mem is always OPEN — put all its chunks in tailChunkIds. A mem is only CLOSED when a different subject starts after it.
 
-OUTPUT: For each closed mem — chunkIds + summary (1-2 sentences capturing key facts).`;
+OUTPUT: For each closed mem — chunkIds + summary.
+
+SUMMARY RULES:
+- Write the summary in the SAME LANGUAGE as the conversation
+- The summary is a MEMORY, not a headline. It must contain all extractable facts in a concise form
+- PRESERVE: numbers, dates, names, specific facts, relationships, conclusions, decisions, actionable details
+- SECONDARY: emotions, filler words, pleasantries — include only if they carry meaning
+- Length: as many sentences as needed to capture all key facts (typically 3-8 sentences for substantive topics, 1-2 for simple exchanges)
+- Think of it as: "What would someone need to know to continue this conversation after forgetting everything?"`;
+
 
     const lastTopicContext = lastClosedTopic
       ? `Last closed topic: "${lastClosedTopic.summary.substring(0, 200).trim()}"\nNote: the first chunks below may be a tail from this topic.\n\n`
