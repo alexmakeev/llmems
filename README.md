@@ -52,6 +52,18 @@ Background (after debounce, default 10 min):
 
 **The Zettelkasten analogy:** each mem is like an atomic note card — one topic, a clear summary. When you ask something, the relevant cards are pulled from the archive and placed in front of the LLM, just like a researcher pulling relevant notes before writing.
 
+### Vocabulary
+
+As mems are created, the LLM also extracts domain-specific terms (names, jargon, abbreviations) and stores them in a dedicated `vocabulary` table. On subsequent summarizations, the known terms list is injected into the LLM prompt so that spellings and capitalizations stay consistent across all mems.
+
+- **Extraction during summarization** — terms are collected per-topic as background summarization runs
+- **Case-insensitive deduplication** — stored with a `LOWER` unique index; the canonical form is preserved on first occurrence
+- **Voice-aware** — content transcribed from voice is not used to create new terms, only to match against existing ones (avoiding transcription noise polluting the vocabulary)
+- **`mem_vocabulary` join table** — links each mem to the terms it contains, with a `count_in_mem` field
+- **`getEstablishedVocabulary(minCount?)`** — returns terms that appear in at least `minCount` mems (default 3); useful for surfacing stable, recurring domain terminology
+- **`getVocabulary()`** — returns all known terms regardless of frequency
+- **`VocabularyTerm` type** — exported from the library for use in consuming code
+
 > **Not a chat history.** `llmems` does not store raw conversation logs and replay them. It compacts conversations into structured, summarized memories — preserving facts while using a fraction of the tokens that verbatim history would require.
 
 ## Memory in practice
@@ -205,6 +217,19 @@ const store = new PostgresMemStore('postgresql://user:pass@localhost:5432/mydb')
 await store.close(); // drain connection pool on shutdown
 ```
 
+**Vocabulary methods** (available on `PostgresMemStore`):
+
+- `getEstablishedVocabulary(minCount?)` — returns `VocabularyTerm[]` for terms that appear in at least `minCount` mems (default 3). Use to surface stable, recurring domain terminology.
+- `getVocabulary()` — returns all `VocabularyTerm[]` regardless of frequency.
+
+```typescript
+import { PostgresMemStore, VocabularyTerm } from '@alexmakeev/llmems';
+
+const store = new PostgresMemStore(process.env.POSTGRES_URL!);
+const terms: VocabularyTerm[] = await store.getEstablishedVocabulary(5);
+// [{ id: 1, term: 'pgvector', firstSeenAt: Date, memCount: 12 }, ...]
+```
+
 ### `InMemoryMemStore`
 
 In-process storage — no dependencies, no persistence. Suitable for testing and short-lived sessions.
@@ -341,6 +366,24 @@ CREATE TABLE IF NOT EXISTS mem_chunks (
   content      TEXT NOT NULL,
   timestamp    TIMESTAMPTZ NOT NULL,
   status       TEXT NOT NULL DEFAULT 'active'
+);
+```
+
+Additional tables for vocabulary support:
+
+```sql
+CREATE TABLE IF NOT EXISTS vocabulary (
+  id           SERIAL PRIMARY KEY,
+  term         TEXT NOT NULL,
+  term_lower   TEXT NOT NULL UNIQUE, -- case-insensitive dedup via LOWER index
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS mem_vocabulary (
+  mem_id       INTEGER NOT NULL REFERENCES mems(id) ON DELETE CASCADE,
+  vocabulary_id INTEGER NOT NULL REFERENCES vocabulary(id) ON DELETE CASCADE,
+  count_in_mem INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (mem_id, vocabulary_id)
 );
 ```
 

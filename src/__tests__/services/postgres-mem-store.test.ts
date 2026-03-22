@@ -561,7 +561,7 @@ describe('PostgresMemStore', () => {
         { rows: [] },           // INSERT memstore
         { rows: [{ id: 42 }] }, // SELECT memstoreId
         { rows: [] },           // BEGIN
-        { rows: [] },           // INSERT mem
+        { rows: [{ id: 1 }] },  // INSERT mem (RETURNING id)
         { rows: [] },           // UPDATE chunks (archive)
         { rows: [] },           // COMMIT
       ]);
@@ -607,7 +607,7 @@ describe('PostgresMemStore', () => {
         { rows: [{ id: 42 }] },
         { rows: [] }, // BEGIN
         { rows: [] }, // UPDATE general summary
-        { rows: [] }, // INSERT mem
+        { rows: [{ id: 1 }] }, // INSERT mem (RETURNING id)
         { rows: [] }, // UPDATE chunks
         { rows: [] }, // COMMIT
       ]);
@@ -637,7 +637,7 @@ describe('PostgresMemStore', () => {
         { rows: [] },
         { rows: [{ id: 42 }] },
         { rows: [] }, // BEGIN
-        { rows: [] }, // INSERT mem
+        { rows: [{ id: 1 }] }, // INSERT mem (RETURNING id)
         { rows: [] }, // UPDATE chunks
         { rows: [] }, // COMMIT
       ]);
@@ -659,8 +659,8 @@ describe('PostgresMemStore', () => {
         { rows: [] },
         { rows: [{ id: 42 }] },
         { rows: [] }, // BEGIN
-        { rows: [] }, // INSERT mem 1
-        { rows: [] }, // INSERT mem 2
+        { rows: [{ id: 1 }] }, // INSERT mem 1 (RETURNING id)
+        { rows: [{ id: 2 }] }, // INSERT mem 2 (RETURNING id)
         { rows: [] }, // UPDATE chunks (archive)
         { rows: [] }, // COMMIT
       ]);
@@ -694,7 +694,7 @@ describe('PostgresMemStore', () => {
         { rows: [] },
         { rows: [{ id: 42 }] },
         { rows: [] }, // BEGIN
-        { rows: [] }, // INSERT mem
+        { rows: [{ id: 1 }] }, // INSERT mem (RETURNING id)
         { rows: [] }, // UPDATE chunks
         { rows: [] }, // COMMIT
       ]);
@@ -721,7 +721,7 @@ describe('PostgresMemStore', () => {
         { rows: [] },
         { rows: [{ id: 42 }] },
         { rows: [] }, // BEGIN
-        { rows: [] }, // INSERT mem
+        { rows: [{ id: 1 }] }, // INSERT mem (RETURNING id)
         // No archive call since chunkIds is empty
         { rows: [] }, // COMMIT
       ]);
@@ -759,6 +759,145 @@ describe('PostgresMemStore', () => {
 
       // release() called twice: once by resolveMemstoreId, once by transaction
       expect(mockClient.release).toHaveBeenCalledTimes(2);
+    });
+
+    it('upserts vocabulary terms and links to mem inside transaction', async () => {
+      setupClientQuerySequence([
+        { rows: [] },           // INSERT memstore
+        { rows: [{ id: 42 }] }, // SELECT memstoreId
+        { rows: [] },           // BEGIN
+        { rows: [{ id: 10 }] }, // INSERT mem (RETURNING id)
+        { rows: [{ id: 99 }] }, // INSERT vocabulary term (RETURNING id)
+        { rows: [] },           // INSERT mem_vocabulary
+        { rows: [] },           // UPDATE chunks (archive)
+        { rows: [] },           // COMMIT
+      ]);
+
+      await store.applyBackgroundResult(
+        [{
+          summary: 'Topic with vocab',
+          chunkIds: ['1'],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [{ term: 'TypeScript', count: 3 }],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const sqlCalls = mockClient.query.mock.calls.map(c => c[0] as string);
+      expect(sqlCalls.some(s => s.includes('INSERT INTO vocabulary'))).toBe(true);
+      expect(sqlCalls.some(s => s.includes('INSERT INTO mem_vocabulary'))).toBe(true);
+
+      // vocabulary insert must be inside transaction (after BEGIN, before COMMIT)
+      const beginIdx = sqlCalls.indexOf('BEGIN');
+      const commitIdx = sqlCalls.indexOf('COMMIT');
+      const vocabIdx = sqlCalls.findIndex(s => s.includes('INSERT INTO vocabulary'));
+      expect(vocabIdx).toBeGreaterThan(beginIdx);
+      expect(vocabIdx).toBeLessThan(commitIdx);
+
+      // mem_vocabulary insert must pass correct count_in_mem
+      const memVocabCall = mockClient.query.mock.calls.find(
+        c => (c[0] as string).includes('INSERT INTO mem_vocabulary'),
+      );
+      expect(memVocabCall).toBeDefined();
+      // params: [mem_id, vocabulary_id, count_in_mem] — count_in_mem should be 3
+      expect(memVocabCall![1]).toContain(3);
+    });
+
+    it('skips vocabulary queries when vocabulary array is empty', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+        { rows: [] }, // BEGIN
+        { rows: [{ id: 1 }] }, // INSERT mem (RETURNING id)
+        { rows: [] }, // UPDATE chunks
+        { rows: [] }, // COMMIT
+      ]);
+
+      await store.applyBackgroundResult(
+        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [], compact: [], micro: [] }, vocabulary: [] }],
+        [],
+        null,
+        ctx,
+      );
+
+      const sqlCalls = mockClient.query.mock.calls.map(c => c[0] as string);
+      expect(sqlCalls.some(s => s.includes('INSERT INTO vocabulary'))).toBe(false);
+      expect(sqlCalls.some(s => s.includes('INSERT INTO mem_vocabulary'))).toBe(false);
+    });
+
+    it('skips vocabulary queries when vocabulary field is absent', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+        { rows: [] }, // BEGIN
+        { rows: [{ id: 1 }] }, // INSERT mem (RETURNING id)
+        { rows: [] }, // UPDATE chunks
+        { rows: [] }, // COMMIT
+      ]);
+
+      await store.applyBackgroundResult(
+        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [], compact: [], micro: [] } }],
+        [],
+        null,
+        ctx,
+      );
+
+      const sqlCalls = mockClient.query.mock.calls.map(c => c[0] as string);
+      expect(sqlCalls.some(s => s.includes('INSERT INTO vocabulary'))).toBe(false);
+    });
+  });
+
+  // ── getEstablishedVocabulary ───────────────────────────────────────────────
+
+  describe('getEstablishedVocabulary', () => {
+    it('returns terms with count >= minCount ordered by count desc, term asc', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({
+        rows: [
+          { term: 'TypeScript', count: 10 },
+          { term: 'Postgres', count: 5 },
+        ],
+      });
+
+      const terms = await store.getEstablishedVocabulary(ctx, 3);
+
+      expect(terms).toHaveLength(2);
+      expect(terms[0]!.term).toBe('TypeScript');
+      expect(terms[0]!.count).toBe(10);
+      expect(terms[1]!.term).toBe('Postgres');
+    });
+
+    it('uses default minCount of 3 when not specified', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.getEstablishedVocabulary(ctx);
+
+      const [sql, params] = mockPool.query.mock.calls[0]!;
+      expect(sql).toContain('count >= $2');
+      expect(params).toContain(3);
+    });
+
+    it('returns empty array when no terms meet the threshold', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const terms = await store.getEstablishedVocabulary(ctx, 5);
+      expect(terms).toHaveLength(0);
     });
   });
 });

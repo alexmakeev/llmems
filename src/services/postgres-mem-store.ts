@@ -4,7 +4,7 @@
 
 import { Pool } from 'pg';
 import pgvector from 'pgvector/pg';
-import type { MemChunk, Mem, MemContextData, IMemStore } from '../types.js';
+import type { MemChunk, Mem, MemContextData, IMemStore, VocabularyTerm } from '../types.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal helpers
@@ -291,7 +291,7 @@ export class PostgresMemStore implements IMemStore {
    * summary first → mems → archive chunks.
    */
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] } }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
@@ -331,11 +331,37 @@ export class PostgresMemStore implements IMemStore {
           ? pgvector.toSql(mem.embeddings.micro)
           : null;
 
-        await client.query(
+        const memInsertResult = await client.query<{ id: number }>(
           `INSERT INTO mems (memstore_id, summary, chunk_ids, embedding, embedding_compact, embedding_micro)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id`,
           [memstoreId, mem.summary, chunkIdsInt, embeddingFull, embeddingCompact, embeddingMicro],
         );
+
+        const memId = memInsertResult.rows[0]!.id;
+
+        // 2a. Upsert vocabulary terms and link to mem
+        if (mem.vocabulary && mem.vocabulary.length > 0) {
+          for (const vocabTerm of mem.vocabulary) {
+            const vocabResult = await client.query<{ id: number }>(
+              `INSERT INTO vocabulary (memstore_id, term, count, last_seen)
+               VALUES ($1, $2, $3, NOW())
+               ON CONFLICT (memstore_id, LOWER(term))
+               DO UPDATE SET count = vocabulary.count + EXCLUDED.count, last_seen = NOW()
+               RETURNING id`,
+              [memstoreId, vocabTerm.term, vocabTerm.count],
+            );
+
+            const vocabId = vocabResult.rows[0]!.id;
+
+            await client.query(
+              `INSERT INTO mem_vocabulary (mem_id, vocabulary_id, count_in_mem)
+               VALUES ($1, $2, $3)
+               ON CONFLICT DO NOTHING`,
+              [memId, vocabId, vocabTerm.count],
+            );
+          }
+        }
       }
 
       // 3. Archive ALL chunks referenced by mems
@@ -360,5 +386,25 @@ export class PostgresMemStore implements IMemStore {
     } finally {
       client.release();
     }
+  }
+
+  // ── Vocabulary methods ─────────────────────────────────────────────────────
+
+  async getEstablishedVocabulary(contextId: string, minCount: number = 3): Promise<VocabularyTerm[]> {
+    const memstoreId = await this.resolveMemstoreId(contextId);
+    const result = await this.pool.query<{ term: string; count: number }>(
+      'SELECT term, count FROM vocabulary WHERE memstore_id = $1 AND count >= $2 ORDER BY count DESC, term ASC',
+      [memstoreId, minCount],
+    );
+    return result.rows.map(r => ({ term: r.term, count: r.count }));
+  }
+
+  async getVocabulary(contextId: string): Promise<VocabularyTerm[]> {
+    const memstoreId = await this.resolveMemstoreId(contextId);
+    const result = await this.pool.query<{ term: string; count: number }>(
+      'SELECT term, count FROM vocabulary WHERE memstore_id = $1 ORDER BY count DESC, term ASC',
+      [memstoreId],
+    );
+    return result.rows.map(r => ({ term: r.term, count: r.count }));
   }
 }

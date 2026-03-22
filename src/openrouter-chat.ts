@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ok, err } from './shared/result.js';
 import type { Result } from './shared/result.js';
-import type { RecallNode, MessageEntry, MemChunk, RecallResult, IMemStore } from './types.js';
+import type { RecallNode, MessageEntry, MemChunk, RecallResult, IMemStore, VocabularyTerm } from './types.js';
 import { retrySleep } from './retry-sleep.js';
 
 // ============================================================
@@ -220,6 +220,10 @@ const BackgroundSummarizationSchema = z.object({
   topics: z.array(z.object({
     summary: z.string(),
     chunkIds: z.array(z.string()),
+    vocabulary: z.array(z.object({
+      term: z.string(),
+      count: z.number(),
+    })).default([]),
   })),
   tailChunkIds: z.array(z.string()),
 });
@@ -236,7 +240,7 @@ const EMPTY_EMBEDDINGS: TopicEmbeddings = { full: [], compact: [], micro: [] };
 
 /** Background summarization result type */
 type BackgroundResult = {
-  topics: { summary: string; chunkIds: string[]; embeddings: TopicEmbeddings }[];
+  topics: { summary: string; chunkIds: string[]; embeddings: TopicEmbeddings; vocabulary: { term: string; count: number }[] }[];
   tailChunkIds: string[];
   newGeneralSummary: string | null;
 };
@@ -257,8 +261,20 @@ const BACKGROUND_SUMMARIZATION_FORMAT: ResponseFormat = {
             properties: {
               summary: { type: 'string' },
               chunkIds: { type: 'array', items: { type: 'string' } },
+              vocabulary: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    term: { type: 'string' },
+                    count: { type: 'integer' },
+                  },
+                  required: ['term', 'count'],
+                  additionalProperties: false,
+                },
+              },
             },
-            required: ['summary', 'chunkIds'],
+            required: ['summary', 'chunkIds', 'vocabulary'],
             additionalProperties: false,
           },
         },
@@ -359,6 +375,18 @@ export class OpenRouterChat {
       generalSummary: contextData.generalSummary,
       closedTopics,
     };
+  }
+
+  // ---- Vocabulary access ----
+
+  /**
+   * Get established vocabulary terms (count >= minCount) for the current context.
+   * Returns an empty array if the underlying store does not support vocabulary.
+   */
+  async getEstablishedVocabulary(minCount: number = 3): Promise<Result<VocabularyTerm[], MemoryError>> {
+    const contextId = this.llmem.contextId;
+    const terms = await this.memManager.getEstablishedVocabulary(contextId, minCount);
+    return ok(terms);
   }
 
   // ---- Public memory access ----
@@ -807,6 +835,13 @@ export class OpenRouterChat {
     // const contextData = await this.memManager.getContextData(contextId);
     // const currentGeneralSummary = contextData.generalSummary;
 
+    // Load known vocabulary terms for prompt injection
+    const knownTerms = await this.memManager.getEstablishedVocabulary(contextId, 3);
+
+    const knownTermsSection = knownTerms.length > 0
+      ? `Known vocabulary (use these exact spellings when matching):\n${knownTerms.map((t: VocabularyTerm) => `- ${t.term}`).join('\n')}\n`
+      : 'No known vocabulary yet. Extract new domain-specific terms freely.\n';
+
     // Get only the last closed mem — for context that the first chunks may be its tail
     const lastClosedTopic = await this.memManager.getLastClosedMem(contextId);
 
@@ -838,7 +873,20 @@ SUMMARY RULES:
 - PRESERVE: numbers, dates, names, specific facts, relationships, conclusions, decisions, actionable details
 - SECONDARY: emotions, filler words, pleasantries — include only if they carry meaning
 - Length: as many sentences as needed to capture all key facts (typically 3-8 sentences for substantive topics, 1-2 for simple exchanges)
-- Think of it as: "What would someone need to know to continue this conversation after forgetting everything?"`;
+- Think of it as: "What would someone need to know to continue this conversation after forgetting everything?"
+
+VOCABULARY EXTRACTION:
+For each closed topic, identify domain-specific terms used in its chunks:
+proper nouns, technical terms, product/project names, role names, specialized jargon.
+${knownTermsSection}
+Rules:
+- For each term: count = approximate number of occurrences within this topic's chunks
+- Match to known vocabulary first (use the exact spelling from the list above)
+- Only add NEW terms if they are clearly domain-specific and NOT from voice-transcribed content
+- Voice-transcribed content (marked with [Voice] or similar indicators): ONLY match to known terms, do NOT introduce new terms from voice input
+- A high count for a term in one topic suggests that topic contains the term's definition
+- Exclude: common everyday words, generic verbs/nouns, prepositions, articles
+- Preserve original capitalization for new terms`;
 
 
     const lastTopicContext = lastClosedTopic
@@ -924,7 +972,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     const topicsWithEmbeddings = await Promise.all(
       topics.map(async (topic) => {
         const embeddings = await this.generateTopicEmbeddings(topic.summary);
-        return { ...topic, embeddings };
+        return { ...topic, embeddings, vocabulary: topic.vocabulary || [] };
       }),
     );
 

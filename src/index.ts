@@ -14,6 +14,7 @@ export type {
   MemContextData,
   RecallNode,
   RecallEdge,
+  VocabularyTerm,
 } from './types.js';
 
 // ============================================================

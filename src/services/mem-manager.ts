@@ -3,7 +3,7 @@
 // closed mem summaries, and general summary for long-term context.
 
 import { randomUUID } from 'node:crypto';
-import type { MemChunk, Mem, MemContextData, IMemStore } from '../types.js';
+import type { MemChunk, Mem, MemContextData, IMemStore, VocabularyTerm } from '../types.js';
 
 /** Generate a chunk ID — used when no external ID is provided */
 const generateChunkId = (): string => randomUUID();
@@ -20,6 +20,7 @@ export class InMemoryMemStore implements IMemStore {
   private closedMems: Mem[] = [];
   private generalSummary: string = '';
   private behaviorInstructions: string = '';
+  private vocabularyIndex = new Map<string, { term: string; count: number; memIds: Set<string> }>();
 
   async getActiveChunks(_contextId: string): Promise<MemChunk[]> {
     return this.activeChunks;
@@ -98,7 +99,7 @@ export class InMemoryMemStore implements IMemStore {
    * If newGeneralSummary !== null → update generalSummary.
    */
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] } }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     _contextId: string,
@@ -115,8 +116,9 @@ export class InMemoryMemStore implements IMemStore {
     // 2. Add closed mems
     const summarizedIds = new Set<string>();
     for (const mem of mems) {
+      const memId = randomUUID();
       const memState: Mem = {
-        id: randomUUID(),
+        id: memId,
         summary: mem.summary,
         chunkIds: mem.chunkIds,
         embeddings: mem.embeddings,
@@ -127,10 +129,37 @@ export class InMemoryMemStore implements IMemStore {
       for (const chunkId of mem.chunkIds) {
         summarizedIds.add(chunkId);
       }
+
+      // 2a. Update vocabulary index
+      if (mem.vocabulary) {
+        for (const v of mem.vocabulary) {
+          const lower = v.term.toLowerCase();
+          const existing = this.vocabularyIndex.get(lower);
+          if (existing) {
+            existing.count += v.count;
+            existing.memIds.add(memId);
+          } else {
+            this.vocabularyIndex.set(lower, { term: v.term, count: v.count, memIds: new Set([memId]) });
+          }
+        }
+      }
     }
 
     // 3. Remove summarized chunks from active list LAST (tailChunkIds do not prevent removal)
     this.activeChunks = this.activeChunks.filter(c => !summarizedIds.has(c.id));
+  }
+
+  async getEstablishedVocabulary(_contextId: string, minCount: number = 3): Promise<VocabularyTerm[]> {
+    return Array.from(this.vocabularyIndex.values())
+      .filter(v => v.count >= minCount)
+      .map(v => ({ term: v.term, count: v.count }))
+      .sort((a, b) => b.count - a.count || a.term.localeCompare(b.term));
+  }
+
+  async getVocabulary(_contextId: string): Promise<VocabularyTerm[]> {
+    return Array.from(this.vocabularyIndex.values())
+      .map(v => ({ term: v.term, count: v.count }))
+      .sort((a, b) => b.count - a.count || a.term.localeCompare(b.term));
   }
 }
 
@@ -152,7 +181,7 @@ export class MemManager {
   }
 
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] } }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
@@ -193,5 +222,19 @@ export class MemManager {
 
   async getActiveChunks(contextId: string): Promise<MemChunk[]> {
     return this.store.getActiveChunks(contextId);
+  }
+
+  async getEstablishedVocabulary(contextId: string, minCount?: number): Promise<VocabularyTerm[]> {
+    if (this.store.getEstablishedVocabulary) {
+      return this.store.getEstablishedVocabulary(contextId, minCount);
+    }
+    return [];
+  }
+
+  async getVocabulary(contextId: string): Promise<VocabularyTerm[]> {
+    if (this.store.getVocabulary) {
+      return this.store.getVocabulary(contextId);
+    }
+    return [];
   }
 }

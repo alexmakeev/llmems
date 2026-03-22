@@ -2,6 +2,15 @@
 // Types used by production code
 
 /**
+ * A domain-specific term extracted from conversation mems.
+ * Used for vocabulary tracking and voice recognition improvement.
+ */
+export interface VocabularyTerm {
+  term: string;
+  count: number;
+}
+
+/**
  * A node returned from recall with graph expansion
  */
 export interface RecallNode {
@@ -94,9 +103,11 @@ export interface IMemStore {
   getLastClosedMem(contextId: string): Promise<Mem | null>;
   getBehaviorInstructions?(contextId: string): Promise<string>;
   setBehaviorInstructions?(instructions: string, contextId: string): Promise<void>;
+  getEstablishedVocabulary?(contextId: string, minCount?: number): Promise<VocabularyTerm[]>;
+  getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
   buildMemContext(contextId: string): Promise<MemContextData>;
   applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] } }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,

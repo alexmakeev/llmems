@@ -306,4 +306,183 @@ describe('MemManager + InMemoryMemStore', () => {
     });
   });
 
+  // ── vocabulary ───────────────────────────────────────────────────────
+
+  describe('vocabulary', () => {
+    it('adds terms via applyBackgroundResult and retrieves them via getEstablishedVocabulary', async () => {
+      const chunk = await manager.addChunk('msg', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S1',
+          chunkIds: [chunk.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [
+            { term: 'TypeScript', count: 5 },
+            { term: 'Postgres', count: 3 },
+          ],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const terms = await store.getEstablishedVocabulary!(ctx, 3);
+      expect(terms).toHaveLength(2);
+      // Sorted by count desc, then term asc
+      expect(terms[0]!.term).toBe('TypeScript');
+      expect(terms[0]!.count).toBe(5);
+      expect(terms[1]!.term).toBe('Postgres');
+      expect(terms[1]!.count).toBe(3);
+    });
+
+    it('filters terms below minCount threshold', async () => {
+      const chunk = await manager.addChunk('msg', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S1',
+          chunkIds: [chunk.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [
+            { term: 'RareWord', count: 1 },
+            { term: 'CommonTerm', count: 5 },
+          ],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const terms = await store.getEstablishedVocabulary!(ctx, 3);
+      expect(terms).toHaveLength(1);
+      expect(terms[0]!.term).toBe('CommonTerm');
+    });
+
+    it('accumulates counts across multiple mems (case-insensitive merging)', async () => {
+      const c1 = await manager.addChunk('msg1', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S1',
+          chunkIds: [c1.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [{ term: 'TypeScript', count: 2 }],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const c2 = await manager.addChunk('msg2', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S2',
+          chunkIds: [c2.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [{ term: 'typescript', count: 3 }],  // lowercase — same term
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const terms = await store.getEstablishedVocabulary!(ctx, 1);
+      // Should be merged into one entry (case-insensitive)
+      expect(terms).toHaveLength(1);
+      expect(terms[0]!.count).toBe(5);
+    });
+
+    it('preserves original capitalization from first insertion', async () => {
+      const chunk = await manager.addChunk('msg', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S1',
+          chunkIds: [chunk.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [{ term: 'TypeScript', count: 2 }],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const terms = await store.getEstablishedVocabulary!(ctx, 1);
+      expect(terms[0]!.term).toBe('TypeScript');
+    });
+
+    it('getVocabulary returns all terms without threshold', async () => {
+      const chunk = await manager.addChunk('msg', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S1',
+          chunkIds: [chunk.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [
+            { term: 'RareWord', count: 1 },
+            { term: 'CommonTerm', count: 5 },
+          ],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const terms = await store.getVocabulary!(ctx);
+      expect(terms).toHaveLength(2);
+    });
+
+    it('MemManager.getEstablishedVocabulary delegates to store', async () => {
+      const chunk = await manager.addChunk('msg', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [{
+          summary: 'S1',
+          chunkIds: [chunk.id],
+          embeddings: { full: [], compact: [], micro: [] },
+          vocabulary: [{ term: 'NodeJS', count: 4 }],
+        }],
+        [],
+        null,
+        ctx,
+      );
+
+      const terms = await manager.getEstablishedVocabulary(ctx, 1);
+      expect(terms).toHaveLength(1);
+      expect(terms[0]!.term).toBe('NodeJS');
+    });
+
+    it('returns empty array when no vocabulary terms exist', async () => {
+      const terms = await manager.getEstablishedVocabulary(ctx, 1);
+      expect(terms).toHaveLength(0);
+    });
+
+    it('stores count_in_mem correctly per topic vocabulary', async () => {
+      // Create two mems with different vocabulary counts
+      const c1 = await manager.addChunk('msg1', new Date(), ctx);
+      const c2 = await manager.addChunk('msg2', new Date(), ctx);
+      await manager.applyBackgroundResult(
+        [
+          {
+            summary: 'Topic 1',
+            chunkIds: [c1.id],
+            embeddings: { full: [], compact: [], micro: [] },
+            vocabulary: [{ term: 'React', count: 7 }],
+          },
+          {
+            summary: 'Topic 2',
+            chunkIds: [c2.id],
+            embeddings: { full: [], compact: [], micro: [] },
+            vocabulary: [{ term: 'React', count: 2 }],
+          },
+        ],
+        [],
+        null,
+        ctx,
+      );
+
+      // Total count should be 7 + 2 = 9
+      const terms = await store.getEstablishedVocabulary!(ctx, 1);
+      expect(terms).toHaveLength(1);
+      expect(terms[0]!.term).toBe('React');
+      expect(terms[0]!.count).toBe(9);
+    });
+  });
+
 });
