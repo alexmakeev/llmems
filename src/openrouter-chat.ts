@@ -140,6 +140,8 @@ export interface OpenRouterChatOptions {
   backgroundDebounceMs?: number;
   /** Optional callback to retrieve behavior instructions for the LLM context */
   getBehaviorInstructions?: () => Promise<string>;
+  /** Optional callback to retrieve domain vocabulary terms for the LLM context */
+  getVocabulary?: () => Promise<VocabularyTerm[]>;
 }
 
 export interface ChatResponse {
@@ -322,6 +324,7 @@ export class OpenRouterChat {
   private readonly embeddingService: IEmbeddingService | undefined;
   private readonly backgroundDebounceMs: number;
   private readonly getBehaviorInstructions?: (() => Promise<string>) | undefined;
+  private readonly getVocabulary?: (() => Promise<VocabularyTerm[]>) | undefined;
 
   // Concurrency management for background summarization
   private isSummarizing = false;
@@ -344,6 +347,7 @@ export class OpenRouterChat {
     this.responseFormat = options.responseFormat;
     this.backgroundDebounceMs = options.backgroundDebounceMs ?? 600_000;
     this.getBehaviorInstructions = options.getBehaviorInstructions;
+    this.getVocabulary = options.getVocabulary;
 
     if (this.debugLog) {
       mkdirSync(dirname(this.debugLogPath), { recursive: true });
@@ -719,6 +723,15 @@ export class OpenRouterChat {
     // Additional user-provided system prompt
     if (this.systemPrompt.length > 0) {
       systemParts.push(`\n\n## Your personality and instructions\n\n${this.systemPrompt}`);
+    }
+
+    // Domain vocabulary for consistent terminology
+    if (this.getVocabulary) {
+      const vocabulary = await this.getVocabulary();
+      if (vocabulary.length > 0) {
+        const termsList = vocabulary.map(v => `- ${v.term}`).join('\n');
+        systemParts.push(`\n\n## Domain vocabulary\n\nEstablished terms the user commonly uses:\n${termsList}`);
+      }
     }
 
     // Layer 2: General summary
