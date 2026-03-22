@@ -876,17 +876,30 @@ SUMMARY RULES:
 - Think of it as: "What would someone need to know to continue this conversation after forgetting everything?"
 
 VOCABULARY EXTRACTION:
-For each closed topic, identify domain-specific terms used in its chunks:
-proper nouns, technical terms, product/project names, role names, specialized jargon.
+For each closed topic, extract domain-specific TERMS — words and phrases that serve as "points in meaning space", anchoring thoughts to specific domains, technologies, or concepts. Terms connect mems that share the same subject matter.
+
+WHAT IS A TERM:
+A term has a SPECIFIC REFERENT — it names a concrete thing, not an abstract action or category:
+- "PostgreSQL" YES (specific DB), "database" NO (category)
+- "React" YES (specific library), "framework" NO (category)
+A term is a NAMED ENTITY in the broadest sense: a technology, library, tool, protocol, pattern, methodology, product, project, service, role, concept, or standard.
+It would appear in a glossary or index, not in a dictionary of common words.
+
+WHAT IS NOT A TERM:
+- Category words without specific referent: server, database, function, component, module, endpoint
+- Action verbs even if technical: deploy, refactor, debug, implement, configure, migrate
+- Generic adjectives/adverbs: async, recursive, scalable
+- Everyday words: message, answer, problem, result, list
+
 ${knownTermsSection}
 Rules:
 - For each term: count = approximate number of occurrences within this topic's chunks
 - Match to known vocabulary first (use the exact spelling from the list above)
 - Only add NEW terms if they are clearly domain-specific and NOT from voice-transcribed content
-- Voice-transcribed content (marked with [Voice] or similar indicators): ONLY match to known terms, do NOT introduce new terms from voice input
+- Voice-transcribed content (marked with [Voice] or similar indicators): ONLY match to known terms, do NOT introduce new terms from voice input — transcription errors would pollute the vocabulary
 - A high count for a term in one topic suggests that topic contains the term's definition
-- Exclude: common everyday words, generic verbs/nouns, prepositions, articles
-- Preserve original capitalization for new terms`;
+- Preserve original capitalization for new terms
+- When unsure if something qualifies — include it. Precision is ensured by the count threshold: noise terms naturally stay below the threshold and get filtered out`;
 
 
     const lastTopicContext = lastClosedTopic
