@@ -142,6 +142,10 @@ export interface OpenRouterChatOptions {
   getBehaviorInstructions?: () => Promise<string>;
   /** Optional callback to retrieve domain vocabulary terms for the LLM context */
   getVocabulary?: () => Promise<VocabularyTerm[]>;
+  /** Optional callback invoked after new mems are persisted from background summarization.
+   *  Receives the created mems (id + summary) and the contextId.
+   *  Fire-and-forget: errors are logged as warnings, never propagated. */
+  onMemsCreated?: (mems: Array<{ id: string; summary: string }>, contextId: string) => Promise<void>;
 }
 
 export interface ChatResponse {
@@ -334,6 +338,7 @@ export class OpenRouterChat {
   // Optional session deps
   private readonly sessionConsolidator?: ISessionConsolidator;
   private readonly precontextLoader?: IPrecontextLoader;
+  private readonly onMemsCreated?: OpenRouterChatOptions['onMemsCreated'];
 
   constructor(options: OpenRouterChatOptions) {
     this.apiKey = options.apiKey;
@@ -355,6 +360,7 @@ export class OpenRouterChat {
 
     if (options.sessionConsolidator !== undefined) this.sessionConsolidator = options.sessionConsolidator;
     if (options.precontextLoader !== undefined) this.precontextLoader = options.precontextLoader;
+    if (options.onMemsCreated !== undefined) this.onMemsCreated = options.onMemsCreated;
   }
 
   // ---- Topic stats (for external monitoring / testing) ----
@@ -431,12 +437,13 @@ export class OpenRouterChat {
     // Apply pending background result if available
     if (!isDryRun && this.pendingResult) {
       try {
-        await this.memManager.applyBackgroundResult(
+        const createdMems = await this.memManager.applyBackgroundResult(
           this.pendingResult.topics,
           this.pendingResult.tailChunkIds,
           this.pendingResult.newGeneralSummary,
           contextId,
         );
+        this.fireOnMemsCreated(createdMems, contextId);
       } catch (topicError) {
         this.log.warn({ error: topicError }, 'prompt: failed to apply pending topic result, continuing');
       }
@@ -784,6 +791,17 @@ export class OpenRouterChat {
   // ---- Background summarization ----
 
   /**
+   * Fire the onMemsCreated callback for a set of newly persisted mems.
+   * Fire-and-forget: never awaited, errors are logged as warnings.
+   */
+  private fireOnMemsCreated(createdMems: Array<{ id: string; summary: string }>, contextId: string): void {
+    if (this.onMemsCreated === undefined || createdMems.length === 0) return;
+    this.onMemsCreated(createdMems, contextId).catch(err => {
+      this.log.warn({ err }, 'onMemsCreated callback failed');
+    });
+  }
+
+  /**
    * Schedule background summarization with debounce.
    *
    * Each call resets the timer. Summarization only runs after
@@ -812,13 +830,14 @@ export class OpenRouterChat {
               // Apply immediately in background — don't defer to next prompt()
               if (result.topics.length > 0 || result.newGeneralSummary !== null) {
                 try {
-                  await this.memManager.applyBackgroundResult(
+                  const createdMems = await this.memManager.applyBackgroundResult(
                     result.topics,
                     result.tailChunkIds,
                     result.newGeneralSummary,
                     contextId
                   );
                   this.log.info({ topicsClosed: result.topics.length }, 'background: applied result immediately');
+                  this.fireOnMemsCreated(createdMems, contextId);
                 } catch (err) {
                   this.log.warn({ error: err }, 'background: failed to apply result, deferring');
                   this.pendingResult = result;
@@ -1059,12 +1078,13 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     // Apply pending background result if available
     if (this.pendingResult) {
       try {
-        await this.memManager.applyBackgroundResult(
+        const createdMems = await this.memManager.applyBackgroundResult(
           this.pendingResult.topics,
           this.pendingResult.tailChunkIds,
           this.pendingResult.newGeneralSummary,
           contextId,
         );
+        this.fireOnMemsCreated(createdMems, contextId);
       } catch (topicError) {
         this.log.warn({ error: topicError }, 'promptWithTools: failed to apply pending topic result, continuing');
       }

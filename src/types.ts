@@ -111,7 +111,7 @@ export interface IMemStore {
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
-  ): Promise<void>;
+  ): Promise<{ id: string; summary: string }[]>;
 }
 
 /**

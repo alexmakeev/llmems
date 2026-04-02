@@ -103,7 +103,7 @@ export class InMemoryMemStore implements IMemStore {
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     _contextId: string,
-  ): Promise<void> {
+  ): Promise<{ id: string; summary: string }[]> {
     // Order: summary → mems → remove chunks.
     // If a concurrent buildContext() reads mid-apply, it sees the new summary
     // alongside not-yet-removed old chunks — safe duplication, never data loss.
@@ -115,6 +115,7 @@ export class InMemoryMemStore implements IMemStore {
 
     // 2. Add closed mems
     const summarizedIds = new Set<string>();
+    const createdMems: { id: string; summary: string }[] = [];
     for (const mem of mems) {
       const memId = randomUUID();
       const memState: Mem = {
@@ -125,6 +126,7 @@ export class InMemoryMemStore implements IMemStore {
         closedAt: new Date(),
       };
       this.closedMems.push(memState);
+      createdMems.push({ id: memId, summary: mem.summary });
 
       for (const chunkId of mem.chunkIds) {
         summarizedIds.add(chunkId);
@@ -147,6 +149,8 @@ export class InMemoryMemStore implements IMemStore {
 
     // 3. Remove summarized chunks from active list LAST (tailChunkIds do not prevent removal)
     this.activeChunks = this.activeChunks.filter(c => !summarizedIds.has(c.id));
+
+    return createdMems;
   }
 
   async getEstablishedVocabulary(_contextId: string, minCount: number = 3): Promise<VocabularyTerm[]> {
@@ -185,8 +189,8 @@ export class MemManager {
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
-  ): Promise<void> {
-    await this.store.applyBackgroundResult(mems, tailChunkIds, newGeneralSummary, contextId);
+  ): Promise<{ id: string; summary: string }[]> {
+    return this.store.applyBackgroundResult(mems, tailChunkIds, newGeneralSummary, contextId);
   }
 
   /**

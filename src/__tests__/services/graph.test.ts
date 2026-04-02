@@ -1014,7 +1014,6 @@ describe('GraphEnrichedLLMem', () => {
   };
 
   let mockGraphRecall: { enrichRecall: ReturnType<typeof vi.fn> };
-  let mockGraphBuilder: object;
   let enrichedLLMem: GraphEnrichedLLMem;
 
   const CONTEXT_ID = 'llmem-context';
@@ -1048,11 +1047,8 @@ describe('GraphEnrichedLLMem', () => {
       enrichRecall: vi.fn(),
     };
 
-    mockGraphBuilder = {};
-
     enrichedLLMem = new GraphEnrichedLLMem(
       mockInner as unknown as LLMem,
-      mockGraphBuilder as unknown as GraphBuilder,
       mockGraphRecall as unknown as GraphRecall,
     );
   });

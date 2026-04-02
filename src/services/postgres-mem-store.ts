@@ -295,10 +295,11 @@ export class PostgresMemStore implements IMemStore {
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
-  ): Promise<void> {
+  ): Promise<{ id: string; summary: string }[]> {
     const memstoreId = await this.resolveMemstoreId(contextId);
 
     const client = await this.pool.connect();
+    const createdMems: { id: string; summary: string }[] = [];
     try {
       await client.query('BEGIN');
 
@@ -339,6 +340,7 @@ export class PostgresMemStore implements IMemStore {
         );
 
         const memId = memInsertResult.rows[0]!.id;
+        createdMems.push({ id: String(memId), summary: mem.summary });
 
         // 2a. Upsert vocabulary terms and link to mem
         if (mem.vocabulary && mem.vocabulary.length > 0) {
@@ -386,6 +388,8 @@ export class PostgresMemStore implements IMemStore {
     } finally {
       client.release();
     }
+
+    return createdMems;
   }
 
   // ── Vocabulary methods ─────────────────────────────────────────────────────

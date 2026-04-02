@@ -10,7 +10,6 @@ import type {
   MemoryError,
   RecallMemoryResult,
 } from '../../openrouter-chat.js';
-import { GraphBuilder } from './graph-builder.js';
 import { GraphRecall } from './graph-recall.js';
 
 export class GraphEnrichedLLMem implements LLMem {
@@ -19,7 +18,6 @@ export class GraphEnrichedLLMem implements LLMem {
 
   constructor(
     private readonly inner: LLMem,
-    _graphBuilder: GraphBuilder,
     private readonly graphRecall: GraphRecall,
   ) {
     this.contextId = inner.contextId;
