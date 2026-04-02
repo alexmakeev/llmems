@@ -1,7 +1,7 @@
 // src/services/graph/graph-builder.ts
 // Main orchestrator: extract projections → embed → store → find neighbors → propose edges via Gemini → save.
 
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { z } from 'zod';
 import { ok, err } from '../../shared/result.js';
 import type { Result } from '../../shared/result.js';
@@ -17,16 +17,17 @@ import { SEMANTIC_AXES } from './types.js';
 import type { GraphStore } from './graph-store.js';
 import type { ProjectionExtractor } from './projection-extractor.js';
 import type { IGraphEmbeddingService } from './embedding-service.js';
+import { createGeminiClient } from './llm-client.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Zod schema for Gemini edge proposals
 // ──────────────────────────────────────────────────────────────────────────────
 
 const EdgeProposalSchema = z.object({
-  source_id: z.string(),
-  target_id: z.string(),
+  source_id: z.string().max(50),
+  target_id: z.string().max(50),
   edge_type: z.enum(['temporal', 'spatial', 'social', 'semantic', 'causal', 'emotional', 'epistemic']),
-  label: z.string(),
+  label: z.string().max(200),
   relevance: z.number().min(0).max(1),
 });
 
@@ -61,14 +62,7 @@ export class GraphBuilder {
     private readonly embedder: IGraphEmbeddingService,
     private readonly config: GraphConfig,
   ) {
-    // Use Gemini via OpenRouter if no dedicated Gemini key is set
-    const useOpenRouter = config.geminiApiKey === undefined || config.geminiApiKey === '';
-    this.geminiClient = new OpenAI({
-      apiKey: useOpenRouter ? config.openaiApiKey : config.geminiApiKey,
-      baseURL: useOpenRouter
-        ? 'https://openrouter.ai/api/v1'
-        : 'https://generativelanguage.googleapis.com/v1beta/openai',
-    });
+    this.geminiClient = createGeminiClient(config);
     this.geminiModel = config.geminiModel;
     this.logger = createMemoryLogger({ name: 'graph-builder' });
   }
@@ -175,23 +169,30 @@ export class GraphBuilder {
     const edgeProposals = edgeProposalsResult.value;
 
     // Step 10: Convert proposals to GraphEdge[], save and return
-    const edges: GraphEdge[] = edgeProposals
-      .slice(0, this.config.maxEdgesFromGemini)
-      .map(proposal => {
-        const targetMemIdStr = extractMemId(proposal.target_id);
-        const discoveryAxis: SemanticAxis = targetMemIdStr !== null
-          ? (discoveryAxisMap.get(targetMemIdStr) ?? 'theme')
-          : 'theme';
+    const edges: GraphEdge[] = [];
+    for (const proposal of edgeProposals.slice(0, this.config.maxEdgesFromGemini)) {
+      const sourceMemIdStr = extractMemId(proposal.source_id);
+      if (sourceMemIdStr === null) {
+        this.logger.warn({ sourceId: proposal.source_id }, 'GraphBuilder: skipping proposal with unparseable source_id');
+        continue;
+      }
 
-        return {
-          sourceMemId: String(memId),
-          targetMemId: targetMemIdStr ?? proposal.target_id,
-          edgeType: proposal.edge_type,
-          label: proposal.label,
-          relevance: proposal.relevance,
-          discoveryAxis,
-        };
+      const targetMemIdStr = extractMemId(proposal.target_id);
+      if (targetMemIdStr === null) {
+        this.logger.warn({ targetId: proposal.target_id }, 'GraphBuilder: skipping proposal with unparseable target_id');
+        continue;
+      }
+
+      const discoveryAxis: SemanticAxis = discoveryAxisMap.get(targetMemIdStr) ?? 'theme';
+      edges.push({
+        sourceMemId: String(memId),
+        targetMemId: targetMemIdStr,
+        edgeType: proposal.edge_type,
+        label: proposal.label,
+        relevance: proposal.relevance,
+        discoveryAxis,
       });
+    }
 
     const saveEdgesResult = await this.store.saveEdges(edges, memstoreId);
     if (!saveEdgesResult.ok) return saveEdgesResult;

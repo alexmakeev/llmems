@@ -229,29 +229,6 @@ export class GraphStore {
   }
 
   /**
-   * Get original mem text by ID (from mems table, field is "summary").
-   */
-  async getMemText(memId: number): Promise<Result<string, Error>> {
-    try {
-      const result = await this.pool.query<{ summary: string }>(
-        `SELECT summary FROM mems WHERE id = $1`,
-        [memId],
-      );
-
-      const row = result.rows[0];
-      if (row === undefined) {
-        return err(new Error(`GraphStore: mem not found for id=${memId}`));
-      }
-
-      return ok(row.summary);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error({ err: message, memId }, 'GraphStore.getMemText failed');
-      return err(new Error(`getMemText failed: ${message}`));
-    }
-  }
-
-  /**
    * Get mem texts for multiple IDs (batch).
    * Returns a Map from memId → summary text.
    */

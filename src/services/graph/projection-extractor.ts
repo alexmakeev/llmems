@@ -1,7 +1,7 @@
 // src/services/graph/projection-extractor.ts
 // Extracts 7 semantic projections from a mem's text using an LLM (Gemini Flash via OpenRouter).
 
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { z } from 'zod';
 import { ok, err } from '../../shared/result.js';
 import type { Result } from '../../shared/result.js';
@@ -9,6 +9,7 @@ import { createMemoryLogger } from '../../logging.js';
 import type { MemoryLogger } from '../../logging.js';
 import type { MemProjection, SemanticAxis, GraphConfig } from './types.js';
 import { SEMANTIC_AXES } from './types.js';
+import { createGeminiClient } from './llm-client.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Zod schema for LLM response
@@ -53,12 +54,7 @@ export class ProjectionExtractor {
   private readonly logger: MemoryLogger;
 
   constructor(config: Pick<GraphConfig, 'geminiApiKey' | 'geminiModel' | 'openaiApiKey'>) {
-    // Use Gemini via OpenRouter if no dedicated Gemini key is set
-    const useOpenRouter = config.geminiApiKey === undefined || config.geminiApiKey === '';
-    this.client = new OpenAI({
-      apiKey: useOpenRouter ? config.openaiApiKey : config.geminiApiKey,
-      baseURL: useOpenRouter ? 'https://openrouter.ai/api/v1' : 'https://generativelanguage.googleapis.com/v1beta/openai',
-    });
+    this.client = createGeminiClient(config);
     this.model = config.geminiModel;
     this.logger = createMemoryLogger({ name: 'projection-extractor' });
   }

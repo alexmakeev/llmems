@@ -793,6 +793,132 @@ describe('GraphBuilder', () => {
     if (result.ok) return;
     expect(result.error.message).toMatch(/memstore not found/i);
   });
+
+  it('processMem returns err when Gemini API throws', async () => {
+    const projections = makeProjections();
+    const embeddings = makeEmbeddings(2);
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockExtractor.extractProjections.mockResolvedValueOnce(ok(projections));
+    mockEmbedder.embedTexts.mockResolvedValueOnce(ok(embeddings));
+    mockStore.saveProjections.mockResolvedValueOnce(ok(undefined));
+
+    mockStore.findSimilarByAxis
+      .mockResolvedValueOnce(ok([
+        { memId: '100', axis: 'chronos', similarity: 0.88, projectionText: 'January period' },
+      ]))
+      .mockResolvedValue(ok([]));
+
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[100, 'Another meeting in January']])));
+
+    mockChatCreate.mockRejectedValueOnce(new Error('Gemini API error'));
+
+    const result = await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/Gemini API call failed/i);
+  });
+
+  it('processMem skips proposals with unparseable target_id', async () => {
+    const projections = makeProjections();
+    const embeddings = makeEmbeddings(2);
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockExtractor.extractProjections.mockResolvedValueOnce(ok(projections));
+    mockEmbedder.embedTexts.mockResolvedValueOnce(ok(embeddings));
+    mockStore.saveProjections.mockResolvedValueOnce(ok(undefined));
+
+    mockStore.findSimilarByAxis
+      .mockResolvedValueOnce(ok([
+        { memId: '100', axis: 'chronos', similarity: 0.88, projectionText: 'January period' },
+      ]))
+      .mockResolvedValue(ok([]));
+
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[100, 'Another meeting in January']])));
+
+    // Gemini returns proposals: one with invalid target_id, one valid
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: JSON.stringify([
+            {
+              source_id: `mem-${MEM_ID}`,
+              target_id: 'invalid-id',
+              edge_type: 'temporal',
+              label: 'bad_proposal',
+              relevance: 0.9,
+            },
+            {
+              source_id: `mem-${MEM_ID}`,
+              target_id: 'mem-100',
+              edge_type: 'semantic',
+              label: 'good_proposal',
+              relevance: 0.85,
+            },
+          ]),
+        },
+      }],
+    });
+
+    mockStore.saveEdges.mockResolvedValueOnce(ok(undefined));
+
+    const result = await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Only the valid proposal should be included
+    expect(result.value).toHaveLength(1);
+    expect(result.value[0]?.targetMemId).toBe('100');
+    expect(result.value[0]?.label).toBe('good_proposal');
+  });
+
+  it('processMem handles findArrayInObject (Gemini wraps array in object)', async () => {
+    const projections = makeProjections();
+    const embeddings = makeEmbeddings(2);
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockExtractor.extractProjections.mockResolvedValueOnce(ok(projections));
+    mockEmbedder.embedTexts.mockResolvedValueOnce(ok(embeddings));
+    mockStore.saveProjections.mockResolvedValueOnce(ok(undefined));
+
+    mockStore.findSimilarByAxis
+      .mockResolvedValueOnce(ok([
+        { memId: '100', axis: 'chronos', similarity: 0.88, projectionText: 'January period' },
+      ]))
+      .mockResolvedValue(ok([]));
+
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[100, 'Another meeting in January']])));
+
+    // Gemini wraps array in an object
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            edges: [
+              {
+                source_id: `mem-${MEM_ID}`,
+                target_id: 'mem-100',
+                edge_type: 'temporal',
+                label: 'same_period',
+                relevance: 0.85,
+              },
+            ],
+          }),
+        },
+      }],
+    });
+
+    mockStore.saveEdges.mockResolvedValueOnce(ok(undefined));
+
+    const result = await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(1);
+    expect(result.value[0]?.targetMemId).toBe('100');
+    expect(result.value[0]?.edgeType).toBe('temporal');
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -999,6 +1125,68 @@ describe('GraphRecall', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toEqual(recallResult);
+  });
+
+  it('enrichRecall adds edges even when no new neighbors found (all edges connect already-recalled mems)', async () => {
+    // Both mems are already in the recall result
+    const recallResult = makeRecallResult(['10', '99']);
+
+    const edges: GraphEdge[] = [
+      {
+        sourceMemId: '10',
+        targetMemId: '99',
+        edgeType: 'temporal' as const,
+        label: 'happened_before',
+        relevance: 0.88,
+        discoveryAxis: 'chronos' as const,
+      },
+    ];
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockStore.getEdgesForMems.mockResolvedValueOnce(ok(edges));
+
+    const result = await graphRecall.enrichRecall(recallResult, CONTEXT_ID);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // No new neighbor nodes added (both were already recalled)
+    expect(result.value.nodes).toHaveLength(2);
+    // getMemTexts was NOT called (no new neighbors to fetch)
+    expect(mockStore.getMemTexts).not.toHaveBeenCalled();
+    // But the RecallEdge is still added
+    expect(result.value.edges).toHaveLength(1);
+    expect(result.value.edges[0]).toMatchObject({ from: '10', to: '99', type: 'temporal', weight: 0.88 });
+  });
+
+  it('enrichRecall handles getMemTexts failure mid-enrichment', async () => {
+    const recallResult = makeRecallResult(['10']);
+
+    const edges: GraphEdge[] = [
+      {
+        sourceMemId: '10',
+        targetMemId: '99',
+        edgeType: 'semantic' as const,
+        label: 'related',
+        relevance: 0.75,
+        discoveryAxis: 'theme' as const,
+      },
+    ];
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockStore.getEdgesForMems.mockResolvedValueOnce(ok(edges));
+    mockStore.getMemTexts.mockResolvedValueOnce(err(new Error('DB timeout')));
+
+    const result = await graphRecall.enrichRecall(recallResult, CONTEXT_ID);
+
+    // Graceful degradation: returns original nodes with edges (no new neighbor nodes)
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Original nodes unchanged
+    expect(result.value.nodes).toHaveLength(1);
+    expect(result.value.nodes[0]?.id).toBe('10');
+    // Edges are still added even though neighbor texts failed to fetch
+    expect(result.value.edges).toHaveLength(1);
+    expect(result.value.edges[0]).toMatchObject({ from: '10', to: '99', type: 'semantic', weight: 0.75 });
   });
 });
 
