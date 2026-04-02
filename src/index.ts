@@ -49,3 +49,9 @@ export type { MemoryModuleConfig } from './config.js';
 // ============================================================
 export { createMemoryLogger } from './logging.js';
 export type { MemoryLogger } from './logging.js';
+
+// ============================================================
+// Graph module (projection-based knowledge graph)
+// ============================================================
+export { GraphStore, GraphBuilder, GraphRecall, GraphEnrichedLLMem, ProjectionExtractor, GraphEmbeddingService } from './services/graph/index.js';
+export type { SemanticAxis, EdgeType, MemProjection, GraphEdge, GraphConfig, AxisCandidate, GroupedCandidates, GeminiEdgeProposal, IGraphEmbeddingService } from './services/graph/index.js';
