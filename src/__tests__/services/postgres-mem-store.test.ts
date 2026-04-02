@@ -884,4 +884,118 @@ describe('PostgresMemStore', () => {
       expect(terms).toHaveLength(0);
     });
   });
+
+  // ── vectorRecall ──────────────────────────────────────────────────────────
+
+  describe('vectorRecall', () => {
+    const memstoreId = 42;
+    const queryEmbedding = [0.1, 0.2, 0.3];
+
+    it('returns ok result with nodes sorted by cosine similarity', async () => {
+      const closedAt1 = new Date('2025-01-01T10:00:00Z');
+      const closedAt2 = new Date('2025-01-02T10:00:00Z');
+
+      mockPool.query.mockResolvedValue({
+        rows: [
+          { id: 5, summary: 'Most relevant mem', chunk_ids: [1], embedding: '[0.1,0.2,0.3]', closed_at: closedAt1, similarity: 0.95 },
+          { id: 3, summary: 'Less relevant mem', chunk_ids: [2], embedding: '[0.4,0.5,0.6]', closed_at: closedAt2, similarity: 0.72 },
+        ],
+      });
+
+      const result = await store.vectorRecall(memstoreId, queryEmbedding);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.nodes).toHaveLength(2);
+      expect(result.value.edges).toHaveLength(0);
+
+      expect(result.value.nodes[0]!.id).toBe('5');
+      expect(result.value.nodes[0]!.text).toBe('Most relevant mem');
+      expect(result.value.nodes[0]!.similarity).toBe(0.95);
+      expect(result.value.nodes[0]!.match).toBe('direct');
+      expect(result.value.nodes[0]!.timestamp).toBe(closedAt1.getTime());
+
+      expect(result.value.nodes[1]!.id).toBe('3');
+      expect(result.value.nodes[1]!.similarity).toBe(0.72);
+    });
+
+    it('uses cosine distance operator <=> in SQL', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.vectorRecall(memstoreId, queryEmbedding);
+
+      const [sql] = mockPool.query.mock.calls[0]!;
+      expect(sql).toContain('<=>');
+      expect(sql).toContain('ORDER BY embedding <=>');
+      expect(sql).toContain('embedding IS NOT NULL');
+    });
+
+    it('passes memstoreId and limit as query parameters', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.vectorRecall(memstoreId, queryEmbedding, 5);
+
+      const [sql, params] = mockPool.query.mock.calls[0]!;
+      expect(params).toContain(memstoreId);
+      expect(params).toContain(5);
+      expect(sql).toContain('LIMIT $3');
+    });
+
+    it('uses default limit of 10 when not specified', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.vectorRecall(memstoreId, queryEmbedding);
+
+      const [, params] = mockPool.query.mock.calls[0]!;
+      expect((params as unknown[])[2]).toBe(10);
+    });
+
+    it('uses pgvector.toSql to format query embedding', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.vectorRecall(memstoreId, queryEmbedding);
+
+      const pgvectorMod = await import('pgvector/pg');
+      expect(pgvectorMod.default.toSql).toHaveBeenCalledWith(queryEmbedding);
+    });
+
+    it('returns ok with empty nodes when no mems match', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const result = await store.vectorRecall(memstoreId, queryEmbedding);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.nodes).toHaveLength(0);
+      expect(result.value.edges).toHaveLength(0);
+    });
+
+    it('returns err result when DB query throws', async () => {
+      mockPool.query.mockRejectedValueOnce(new Error('DB connection lost'));
+
+      const result = await store.vectorRecall(memstoreId, queryEmbedding);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toBe('DB connection lost');
+    });
+
+    it('maps nodes with empty tags array and match=direct', async () => {
+      const closedAt = new Date('2025-03-01T08:00:00Z');
+
+      mockPool.query.mockResolvedValue({
+        rows: [
+          { id: 7, summary: 'Test mem', chunk_ids: [], embedding: '[0.1]', closed_at: closedAt, similarity: 0.88 },
+        ],
+      });
+
+      const result = await store.vectorRecall(memstoreId, queryEmbedding);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.nodes[0]!.tags).toEqual([]);
+      expect(result.value.nodes[0]!.match).toBe('direct');
+    });
+  });
 });

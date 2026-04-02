@@ -1,6 +1,8 @@
 // src/types.ts
 // Types used by production code
 
+import type { Result } from './shared/result.js';
+
 /**
  * A domain-specific term extracted from conversation mems.
  * Used for vocabulary tracking and voice recognition improvement.
@@ -102,6 +104,7 @@ export interface IMemStore {
   getEstablishedVocabulary?(contextId: string, minCount?: number): Promise<VocabularyTerm[]>;
   getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
   buildMemContext(contextId: string): Promise<MemContextData>;
+  vectorRecall?(memstoreId: number, queryEmbedding: number[], limit?: number): Promise<Result<RecallResult>>;
   applyBackgroundResult(
     mems: { summary: string; chunkIds: string[]; embedding: number[]; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],

@@ -4,7 +4,9 @@
 
 import { Pool } from 'pg';
 import pgvector from 'pgvector/pg';
-import type { MemChunk, Mem, MemContextData, IMemStore, VocabularyTerm } from '../types.js';
+import type { MemChunk, Mem, MemContextData, IMemStore, VocabularyTerm, RecallResult } from '../types.js';
+import { ok, err } from '../shared/result.js';
+import type { Result } from '../shared/result.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal helpers
@@ -378,6 +380,54 @@ export class PostgresMemStore implements IMemStore {
     }
 
     return createdMems;
+  }
+
+  // ── Vector recall ─────────────────────────────────────────────────────────
+
+  /**
+   * Cosine similarity search over mems for a given memstore.
+   * Returns mems sorted by relevance (most similar first) as RecallResult nodes.
+   * Edges are empty — this is a flat vector search without graph expansion.
+   */
+  async vectorRecall(
+    memstoreId: number,
+    queryEmbedding: number[],
+    limit: number = 10,
+  ): Promise<Result<RecallResult>> {
+    try {
+      const embeddingParam = pgvector.toSql(queryEmbedding);
+
+      const result = await this.pool.query<{
+        id: number;
+        summary: string;
+        chunk_ids: number[] | null;
+        embedding: unknown;
+        closed_at: Date;
+        similarity: number;
+      }>(
+        `SELECT id, summary, chunk_ids, embedding, closed_at,
+                1 - (embedding <=> $2::vector) AS similarity
+         FROM mems
+         WHERE memstore_id = $1
+           AND embedding IS NOT NULL
+         ORDER BY embedding <=> $2::vector
+         LIMIT $3`,
+        [memstoreId, embeddingParam, limit],
+      );
+
+      const nodes = result.rows.map(row => ({
+        id: String(row.id),
+        text: row.summary,
+        tags: [],
+        timestamp: row.closed_at.getTime(),
+        similarity: row.similarity,
+        match: 'direct' as const,
+      }));
+
+      return ok({ nodes, edges: [] });
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   // ── Vocabulary methods ─────────────────────────────────────────────────────

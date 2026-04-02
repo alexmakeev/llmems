@@ -3,7 +3,9 @@
 // closed mem summaries, and general summary for long-term context.
 
 import { randomUUID } from 'node:crypto';
-import type { MemChunk, Mem, MemContextData, IMemStore, VocabularyTerm } from '../types.js';
+import type { MemChunk, Mem, MemContextData, IMemStore, VocabularyTerm, RecallResult } from '../types.js';
+import { ok } from '../shared/result.js';
+import type { Result } from '../shared/result.js';
 
 /** Generate a chunk ID — used when no external ID is provided */
 const generateChunkId = (): string => randomUUID();
@@ -151,6 +153,10 @@ export class InMemoryMemStore implements IMemStore {
     this.activeChunks = this.activeChunks.filter(c => !summarizedIds.has(c.id));
 
     return createdMems;
+  }
+
+  async vectorRecall(_memstoreId: number, _queryEmbedding: number[], _limit?: number): Promise<Result<RecallResult>> {
+    return ok({ nodes: [], edges: [] });
   }
 
   async getEstablishedVocabulary(_contextId: string, minCount: number = 3): Promise<VocabularyTerm[]> {
