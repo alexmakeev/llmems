@@ -66,6 +66,7 @@ export interface GraphConfig {
   topKPerAxis: number;          // default 5
   maxEdgesFromGemini: number;   // default 20
   openaiApiKey: string;
+  openaiBaseUrl?: string;       // default undefined → api.openai.com; set to OpenRouter URL when using OR key
   openaiModel: string;          // default 'text-embedding-3-small'
   geminiApiKey?: string;        // uses openrouter if not set
   geminiModel: string;          // default 'google/gemini-2.5-flash'

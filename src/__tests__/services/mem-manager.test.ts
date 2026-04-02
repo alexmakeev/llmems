@@ -44,7 +44,7 @@ describe('MemManager + InMemoryMemStore', () => {
       const chunk2 = await manager.addChunk('reply1', new Date(), ctx);
 
       await manager.applyBackgroundResult(
-        [{ summary: 'Summary of mem 1', chunkIds: [chunk1.id, chunk2.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Summary of mem 1', chunkIds: [chunk1.id, chunk2.id], embedding: [] }],
         [],
         null,
         ctx,
@@ -57,7 +57,7 @@ describe('MemManager + InMemoryMemStore', () => {
     it('closed mem has correct summary', async () => {
       const chunk1 = await manager.addChunk('msg1', new Date(), ctx);
       await manager.applyBackgroundResult(
-        [{ summary: 'Mem summary', chunkIds: [chunk1.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Mem summary', chunkIds: [chunk1.id], embedding: [] }],
         [],
         null,
         ctx,
@@ -76,7 +76,7 @@ describe('MemManager + InMemoryMemStore', () => {
       const chunk3 = await manager.addChunk('msg2', new Date(), ctx);
 
       await manager.applyBackgroundResult(
-        [{ summary: 'Summary', chunkIds: [chunk1.id, chunk2.id, chunk3.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Summary', chunkIds: [chunk1.id, chunk2.id, chunk3.id], embedding: [] }],
         [],
         null,
         ctx,
@@ -93,7 +93,7 @@ describe('MemManager + InMemoryMemStore', () => {
       const c3 = await manager.addChunk('chunk3', new Date(), ctx);
 
       await manager.applyBackgroundResult(
-        [{ summary: 'mem1', chunkIds: [c1.id, c2.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'mem1', chunkIds: [c1.id, c2.id], embedding: [] }],
         [c2.id],    // c2 is in tailChunkIds — but tailChunkIds are informational only, does NOT prevent removal
         null,
         ctx,
@@ -129,7 +129,7 @@ describe('MemManager + InMemoryMemStore', () => {
     it('with 1 closed mem — lastClosedMem set, recentClosedMems empty', async () => {
       await manager.addChunk('msg', new Date(), ctx);
       await manager.applyBackgroundResult(
-        [{ summary: 'S1', chunkIds: [], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'S1', chunkIds: [], embedding: [] }],
         [],
         null,
         ctx,
@@ -144,14 +144,14 @@ describe('MemManager + InMemoryMemStore', () => {
     it('with 2 closed mems — lastClosedMem is newest, recentClosedMems has 1', async () => {
       await manager.addChunk('msg1', new Date(), ctx);
       await manager.applyBackgroundResult(
-        [{ summary: 'S1', chunkIds: [], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'S1', chunkIds: [], embedding: [] }],
         [],
         null,
         ctx,
       );
       await manager.addChunk('msg2', new Date(), ctx);
       await manager.applyBackgroundResult(
-        [{ summary: 'S2', chunkIds: [], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'S2', chunkIds: [], embedding: [] }],
         [],
         null,
         ctx,
@@ -167,7 +167,7 @@ describe('MemManager + InMemoryMemStore', () => {
       for (let i = 1; i <= 4; i++) {
         await manager.addChunk(`msg${i}`, new Date(), ctx);
         await manager.applyBackgroundResult(
-          [{ summary: `S${i}`, chunkIds: [], embeddings: { full: [], compact: [], micro: [] } }],
+          [{ summary: `S${i}`, chunkIds: [], embedding: [] }],
           [],
           null,
           ctx,
@@ -190,7 +190,7 @@ describe('MemManager + InMemoryMemStore', () => {
       for (let i = 1; i <= 3; i++) {
         await manager.addChunk(`msg${i}`, new Date(), ctx);
         await manager.applyBackgroundResult(
-          [{ summary: `S${i}`, chunkIds: [], embeddings: { full: [], compact: [], micro: [] } }],
+          [{ summary: `S${i}`, chunkIds: [], embedding: [] }],
           [],
           null,
           ctx,
@@ -228,7 +228,7 @@ describe('MemManager + InMemoryMemStore', () => {
       const t1c1 = await manager.addChunk('Tell me about cats', new Date('2025-01-01T10:00:00Z'), ctx);
       const t1c2 = await manager.addChunk('Cats are great!', new Date('2025-01-01T10:01:00Z'), ctx);
       await manager.applyBackgroundResult(
-        [{ summary: 'Feline behavior patterns and domestication history', chunkIds: [t1c1.id, t1c2.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Feline behavior patterns and domestication history', chunkIds: [t1c1.id, t1c2.id], embedding: [] }],
         [],
         null,
         ctx,
@@ -238,7 +238,7 @@ describe('MemManager + InMemoryMemStore', () => {
       const t2c1 = await manager.addChunk('Now about dogs', new Date('2025-01-01T11:00:00Z'), ctx);
       const t2c2 = await manager.addChunk('Dogs are loyal', new Date('2025-01-01T11:01:00Z'), ctx);
       await manager.applyBackgroundResult(
-        [{ summary: 'Canine loyalty characteristics and training methods', chunkIds: [t2c1.id, t2c2.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Canine loyalty characteristics and training methods', chunkIds: [t2c1.id, t2c2.id], embedding: [] }],
         [],
         null,
         ctx,
@@ -294,7 +294,7 @@ describe('MemManager + InMemoryMemStore', () => {
       const c3 = await manager.addChunk('msg2', new Date(), ctx);
 
       await manager.applyBackgroundResult(
-        [{ summary: 'Closed summary', chunkIds: [c1.id, c2.id, c3.id], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Closed summary', chunkIds: [c1.id, c2.id, c3.id], embedding: [] }],
         [],
         null,
         ctx,
@@ -315,7 +315,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S1',
           chunkIds: [chunk.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [
             { term: 'TypeScript', count: 5 },
             { term: 'Postgres', count: 3 },
@@ -341,7 +341,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S1',
           chunkIds: [chunk.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [
             { term: 'RareWord', count: 1 },
             { term: 'CommonTerm', count: 5 },
@@ -363,7 +363,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S1',
           chunkIds: [c1.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [{ term: 'TypeScript', count: 2 }],
         }],
         [],
@@ -376,7 +376,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S2',
           chunkIds: [c2.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [{ term: 'typescript', count: 3 }],  // lowercase — same term
         }],
         [],
@@ -396,7 +396,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S1',
           chunkIds: [chunk.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [{ term: 'TypeScript', count: 2 }],
         }],
         [],
@@ -414,7 +414,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S1',
           chunkIds: [chunk.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [
             { term: 'RareWord', count: 1 },
             { term: 'CommonTerm', count: 5 },
@@ -435,7 +435,7 @@ describe('MemManager + InMemoryMemStore', () => {
         [{
           summary: 'S1',
           chunkIds: [chunk.id],
-          embeddings: { full: [], compact: [], micro: [] },
+          embedding: [],
           vocabulary: [{ term: 'NodeJS', count: 4 }],
         }],
         [],
@@ -462,13 +462,13 @@ describe('MemManager + InMemoryMemStore', () => {
           {
             summary: 'Topic 1',
             chunkIds: [c1.id],
-            embeddings: { full: [], compact: [], micro: [] },
+            embedding: [],
             vocabulary: [{ term: 'React', count: 7 }],
           },
           {
             summary: 'Topic 2',
             chunkIds: [c2.id],
-            embeddings: { full: [], compact: [], micro: [] },
+            embedding: [],
             vocabulary: [{ term: 'React', count: 2 }],
           },
         ],

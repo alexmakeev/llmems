@@ -79,11 +79,7 @@ export interface Mem {
   id: string;
   summary: string;
   chunkIds: string[];
-  embeddings: {
-    full: number[];    // 1024 dims
-    compact: number[]; // 256 dims
-    micro: number[];   // 64 dims
-  };
+  embedding: number[]; // 1536 dims (text-embedding-3-small)
   closedAt: Date;
 }
 
@@ -107,7 +103,7 @@ export interface IMemStore {
   getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
   buildMemContext(contextId: string): Promise<MemContextData>;
   applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embedding: number[]; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,

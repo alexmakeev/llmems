@@ -125,7 +125,7 @@ describe('getVocabulary callback in OpenRouterChat', () => {
       [{
         summary: 'First topic summary',
         chunkIds: [chunk1.id],
-        embeddings: { full: [], compact: [], micro: [] },
+        embedding: [],
       }],
       [],
       null,
@@ -136,7 +136,7 @@ describe('getVocabulary callback in OpenRouterChat', () => {
       [{
         summary: 'Second topic summary',
         chunkIds: [chunk2.id],
-        embeddings: { full: [], compact: [], micro: [] },
+        embedding: [],
       }],
       [],
       null,

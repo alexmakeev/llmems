@@ -35,19 +35,13 @@ function rowToMem(row: {
   summary: string;
   chunk_ids: number[] | null;
   embedding: unknown;
-  embedding_compact: unknown;
-  embedding_micro: unknown;
   closed_at: Date;
 }): Mem {
   return {
     id: String(row.id),
     summary: row.summary,
     chunkIds: (row.chunk_ids ?? []).map(String),
-    embeddings: {
-      full: parseVector(row.embedding),
-      compact: parseVector(row.embedding_compact),
-      micro: parseVector(row.embedding_micro),
-    },
+    embedding: parseVector(row.embedding),
     closedAt: row.closed_at,
   };
 }
@@ -166,12 +160,12 @@ export class PostgresMemStore implements IMemStore {
     const memstoreId = await this.resolveMemstoreId(contextId);
 
     const queryText = limit !== undefined
-      ? `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+      ? `SELECT id, summary, chunk_ids, embedding, closed_at
          FROM mems
          WHERE memstore_id = $1
          ORDER BY closed_at DESC
          LIMIT $2`
-      : `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+      : `SELECT id, summary, chunk_ids, embedding, closed_at
          FROM mems
          WHERE memstore_id = $1
          ORDER BY closed_at DESC`;
@@ -239,7 +233,7 @@ export class PostgresMemStore implements IMemStore {
     const memstoreId = await this.resolveMemstoreId(contextId);
 
     const result = await this.pool.query(
-      `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+      `SELECT id, summary, chunk_ids, embedding, closed_at
        FROM mems
        WHERE memstore_id = $1
        ORDER BY closed_at DESC
@@ -291,7 +285,7 @@ export class PostgresMemStore implements IMemStore {
    * summary first → mems → archive chunks.
    */
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embedding: number[]; vocabulary?: { term: string; count: number }[] }[],
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
@@ -322,21 +316,15 @@ export class PostgresMemStore implements IMemStore {
           allMemChunkIds.add(id);
         }
 
-        const embeddingFull = mem.embeddings.full.length > 0
-          ? pgvector.toSql(mem.embeddings.full)
-          : null;
-        const embeddingCompact = mem.embeddings.compact.length > 0
-          ? pgvector.toSql(mem.embeddings.compact)
-          : null;
-        const embeddingMicro = mem.embeddings.micro.length > 0
-          ? pgvector.toSql(mem.embeddings.micro)
+        const embeddingValue = mem.embedding.length > 0
+          ? pgvector.toSql(mem.embedding)
           : null;
 
         const memInsertResult = await client.query<{ id: number }>(
-          `INSERT INTO mems (memstore_id, summary, chunk_ids, embedding, embedding_compact, embedding_micro)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO mems (memstore_id, summary, chunk_ids, embedding)
+           VALUES ($1, $2, $3, $4)
            RETURNING id`,
-          [memstoreId, mem.summary, chunkIdsInt, embeddingFull, embeddingCompact, embeddingMicro],
+          [memstoreId, mem.summary, chunkIdsInt, embeddingValue],
         );
 
         const memId = memInsertResult.rows[0]!.id;

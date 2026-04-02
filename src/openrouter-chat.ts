@@ -67,7 +67,7 @@ export interface IPrecontextLoader {
 
 /** Embedding result */
 interface EmbeddingValue {
-  compact: number[];
+  embedding: number[]; // 1536 dims (text-embedding-3-small)
 }
 
 /** Embedding service (optional dep) */
@@ -125,7 +125,7 @@ export interface OpenRouterChatOptions {
   precontextLoader?: IPrecontextLoader;
   /** Mem store implementation — if not provided, uses InMemoryMemStore */
   memStore?: IMemStore;
-  /** Embedding service — used to generate Matryoshka embeddings for closed mems */
+  /** Embedding service — used to generate 1536d embeddings for closed mems */
   embeddingService?: IEmbeddingService;
   /** Enable debug logging of every LLM call to a JSONL file */
   debugLog?: boolean;
@@ -234,19 +234,12 @@ const BackgroundSummarizationSchema = z.object({
   tailChunkIds: z.array(z.string()),
 });
 
-/** Matryoshka embedding set for a closed topic */
-type TopicEmbeddings = {
-  full: number[];    // 1024 dims
-  compact: number[]; // 256 dims
-  micro: number[];   // 64 dims
-};
-
-/** Empty embeddings fallback when embedding service is unavailable */
-const EMPTY_EMBEDDINGS: TopicEmbeddings = { full: [], compact: [], micro: [] };
+/** Empty embedding fallback when embedding service is unavailable */
+const EMPTY_EMBEDDING: number[] = [];
 
 /** Background summarization result type */
 type BackgroundResult = {
-  topics: { summary: string; chunkIds: string[]; embeddings: TopicEmbeddings; vocabulary: { term: string; count: number }[] }[];
+  topics: { summary: string; chunkIds: string[]; embedding: number[]; vocabulary: { term: string; count: number }[] }[];
   tailChunkIds: string[];
   newGeneralSummary: string | null;
 };
@@ -1013,11 +1006,11 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     //   }
     // }
 
-    // Generate Matryoshka embeddings for each topic
+    // Generate 1536d embeddings for each topic
     const topicsWithEmbeddings = await Promise.all(
       topics.map(async (topic) => {
-        const embeddings = await this.generateTopicEmbeddings(topic.summary);
-        return { ...topic, embeddings, vocabulary: topic.vocabulary || [] };
+        const embedding = await this.generateTopicEmbedding(topic.summary);
+        return { ...topic, embedding, vocabulary: topic.vocabulary || [] };
       }),
     );
 
@@ -1025,31 +1018,21 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
   }
 
   /**
-   * Generate Matryoshka embeddings (1024/256/64) for a topic summary.
-   * Returns empty embeddings if embedding service is not available or fails.
+   * Generate a 1536d embedding (text-embedding-3-small) for a topic summary.
+   * Returns an empty array if embedding service is not available or fails.
    */
-  private async generateTopicEmbeddings(summary: string): Promise<TopicEmbeddings> {
+  private async generateTopicEmbedding(summary: string): Promise<number[]> {
     if (!this.embeddingService) {
-      return EMPTY_EMBEDDINGS;
+      return EMPTY_EMBEDDING;
     }
 
     const result = await this.embeddingService.embed(summary);
     if (!result.ok) {
-      this.log.warn({ error: result.error }, 'Failed to generate topic embeddings, using empty');
-      return EMPTY_EMBEDDINGS;
+      this.log.warn({ error: result.error }, 'Failed to generate topic embedding, using empty');
+      return EMPTY_EMBEDDING;
     }
 
-    // Embedding service returns full (4096) and compact (1024).
-    // For topics: full=compact(1024), compact=truncate+normalize(256), micro=truncate+normalize(64)
-    const vector1024 = result.value.compact; // Already 1024-dim and L2-normalized
-    const compact256 = l2Normalize(vector1024.slice(0, 256));
-    const micro64 = l2Normalize(vector1024.slice(0, 64));
-
-    return {
-      full: vector1024,
-      compact: compact256,
-      micro: micro64,
-    };
+    return result.value.embedding;
   }
 
   // ---- Tool calling methods ----
@@ -1498,15 +1481,6 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
 // ============================================================
 // Module-level helpers
 // ============================================================
-
-/**
- * L2 normalize a vector (divide each element by the L2 norm).
- * Returns the original vector if norm is 0 (avoids division by zero).
- */
-function l2Normalize(vec: number[]): number[] {
-  const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-  return norm > 0 ? vec.map(v => v / norm) : vec;
-}
 
 /**
  * Safely parse a JSON string, returning undefined on failure.

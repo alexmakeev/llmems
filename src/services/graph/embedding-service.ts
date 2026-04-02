@@ -39,9 +39,11 @@ export class GraphEmbeddingService implements IGraphEmbeddingService {
   private readonly model: string;
   private readonly logger: MemoryLogger;
 
-  constructor(config: Pick<GraphConfig, 'openaiApiKey' | 'openaiModel'>) {
-    // Use OpenAI native API directly (not OpenRouter) for embeddings
-    this.client = new OpenAI({ apiKey: config.openaiApiKey });
+  constructor(config: Pick<GraphConfig, 'openaiApiKey' | 'openaiBaseUrl' | 'openaiModel'>) {
+    this.client = new OpenAI({
+      apiKey: config.openaiApiKey,
+      ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+    });
     this.model = config.openaiModel;
     this.logger = createMemoryLogger({ name: 'graph-embedding-service' });
   }
