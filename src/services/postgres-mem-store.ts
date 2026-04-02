@@ -71,7 +71,7 @@ function rowToMemChunk(row: { id: number; content: string; timestamp: Date }): M
  *
  * Schema (must exist):
  *   memstores(id, name, general_summary, created_at)
- *   mems(id, memstore_id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at)
+ *   mems(id, memstore_id, summary, chunk_ids, embedding, closed_at)
  *   mem_chunks(id, memstore_id, content, timestamp, status)
  */
 export class PostgresMemStore implements IMemStore {

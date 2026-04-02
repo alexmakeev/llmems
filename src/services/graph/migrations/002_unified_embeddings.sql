@@ -9,6 +9,9 @@ DROP INDEX IF EXISTS idx_mems_embedding_compact;
 ALTER TABLE mems DROP COLUMN IF EXISTS embedding_compact;
 ALTER TABLE mems DROP COLUMN IF EXISTS embedding_micro;
 
+-- Clear old 1024d embeddings (incompatible dimensions, re-embedding required)
+UPDATE mems SET embedding = NULL WHERE embedding IS NOT NULL;
+
 -- Change embedding dimension
 ALTER TABLE mems ALTER COLUMN embedding TYPE vector(1536);
 

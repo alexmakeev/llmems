@@ -627,7 +627,6 @@ describe('GraphBuilder', () => {
     findSimilarByAxis: ReturnType<typeof vi.fn>;
     saveEdges: ReturnType<typeof vi.fn>;
     getEdgesForMems: ReturnType<typeof vi.fn>;
-    getMemText: ReturnType<typeof vi.fn>;
     getMemTexts: ReturnType<typeof vi.fn>;
   };
 
@@ -672,7 +671,6 @@ describe('GraphBuilder', () => {
       findSimilarByAxis: vi.fn(),
       saveEdges: vi.fn(),
       getEdgesForMems: vi.fn(),
-      getMemText: vi.fn(),
       getMemTexts: vi.fn(),
     };
 
@@ -933,7 +931,6 @@ describe('GraphRecall', () => {
     saveProjections: ReturnType<typeof vi.fn>;
     findSimilarByAxis: ReturnType<typeof vi.fn>;
     saveEdges: ReturnType<typeof vi.fn>;
-    getMemText: ReturnType<typeof vi.fn>;
   };
 
   let graphRecall: GraphRecall;
@@ -965,7 +962,6 @@ describe('GraphRecall', () => {
       saveProjections: vi.fn(),
       findSimilarByAxis: vi.fn(),
       saveEdges: vi.fn(),
-      getMemText: vi.fn(),
     };
 
     graphRecall = new GraphRecall(mockStore as unknown as GraphStore);
