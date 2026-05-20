@@ -42,15 +42,9 @@ import { recallAtK, precisionAtK } from '../src/services/graph/recall-metrics.js
 const POSTGRES_URL = process.env['POSTGRES_URL'] ??
   'postgresql://llmems:pEDqwhPpyd3KYiy1rg5O0d8nGwTZxUvJ@localhost:5434/llmems_axis_projections';
 const OPENROUTER_API_KEY = process.env['OPENROUTER_API_KEY'] ?? '';
-const OPENAI_API_KEY = process.env['OPENAI_API_KEY'] ?? '';
 
 if (!OPENROUTER_API_KEY) {
   console.error('ERROR: OPENROUTER_API_KEY is required');
-  process.exit(1);
-}
-
-if (!OPENAI_API_KEY) {
-  console.error('ERROR: OPENAI_API_KEY is required (used for query projection embeddings)');
   process.exit(1);
 }
 
@@ -863,10 +857,14 @@ async function main(): Promise<void> {
   const memStore = new PostgresMemStore(POSTGRES_URL);
   const graphStore = new GraphStore(pool);
   const graphRecall = new GraphRecall(graphStore);
+  // Query embeddings use the same OpenRouter provider + model as mem_projection embeddings
+  // (re-extract-projections.ts) so both vectors live in the same space.
   const projectionExtractor = new ProjectionExtractor({
     geminiApiKey: OPENROUTER_API_KEY,
     geminiModel: 'google/gemini-2.5-flash',
-    openaiApiKey: OPENAI_API_KEY,
+    openaiApiKey: OPENROUTER_API_KEY,
+    openaiBaseUrl: 'https://openrouter.ai/api/v1',
+    openaiModel: 'text-embedding-3-small',
   });
 
   // Load all 100 questions

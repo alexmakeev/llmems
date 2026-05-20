@@ -93,6 +93,7 @@ export class ProjectionExtractor {
   private readonly client: OpenAI;
   private readonly embeddingClient: OpenAI;
   private readonly model: string;
+  private readonly embeddingModel: string;
   private readonly logger: MemoryLogger;
   private readonly systemPrompt: string;
 
@@ -102,14 +103,19 @@ export class ProjectionExtractor {
    *                     Defaults to process.cwd(). Override in tests to use a temp dir.
    */
   constructor(
-    config: Pick<GraphConfig, 'geminiApiKey' | 'geminiModel' | 'openaiApiKey'>,
+    config: Pick<GraphConfig, 'geminiApiKey' | 'geminiModel' | 'openaiApiKey' | 'openaiBaseUrl' | 'openaiModel'>,
     configRoot: string = process.cwd(),
   ) {
     this.systemPrompt = loadSystemPrompt(configRoot);
     this.client = createGeminiClient(config);
-    // Separate OpenAI client for embeddings — uses standard api.openai.com endpoint.
-    this.embeddingClient = new OpenAI({ apiKey: config.openaiApiKey });
+    // Embedding client: uses the same provider/model as GraphEmbeddingService so query
+    // vectors and mem_projection vectors are guaranteed to live in the same space.
+    this.embeddingClient = new OpenAI({
+      apiKey: config.openaiApiKey,
+      ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+    });
     this.model = config.geminiModel;
+    this.embeddingModel = config.openaiModel;
     this.logger = createMemoryLogger({ name: 'projection-extractor' });
   }
 
@@ -261,7 +267,7 @@ export class ProjectionExtractor {
 
       try {
         const response = await this.embeddingClient.embeddings.create({
-          model: 'text-embedding-3-small',
+          model: this.embeddingModel,
           input: texts,
           dimensions: 1536,
         });

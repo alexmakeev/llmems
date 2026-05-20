@@ -11,15 +11,22 @@ import { tmpdir } from 'os';
 // Hoisted mock objects (must precede vi.mock calls)
 // ──────────────────────────────────────────────────────────────────────────────
 
-const { mockChatCreate } = vi.hoisted(() => {
+const { mockChatCreate, mockEmbeddingsCreate, openaiConstructorCalls } = vi.hoisted(() => {
   const mockChatCreate = vi.fn();
-  return { mockChatCreate };
+  const mockEmbeddingsCreate = vi.fn();
+  // Captures the config object passed to each `new OpenAI(config)` call.
+  const openaiConstructorCalls: Array<{ apiKey?: string; baseURL?: string }> = [];
+  return { mockChatCreate, mockEmbeddingsCreate, openaiConstructorCalls };
 });
 
 vi.mock('openai', () => {
   class OpenAI {
     chat = { completions: { create: mockChatCreate } };
-    embeddings = { create: vi.fn() };
+    embeddings = { create: mockEmbeddingsCreate };
+
+    constructor(config: { apiKey?: string; baseURL?: string } = {}) {
+      openaiConstructorCalls.push({ apiKey: config.apiKey, baseURL: config.baseURL });
+    }
   }
   return { default: OpenAI };
 });
@@ -99,6 +106,102 @@ describe('ProjectionExtractor — env-driven prompt', () => {
     try {
       const extractor = new ProjectionExtractor(BASE_CONFIG, promptsDir);
       expect(extractor).toBeDefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  // ── Unified embedding path (OpenRouter) ──────────────────────────────────────
+
+  it('embedding client gets OpenRouter baseURL when openaiBaseUrl is provided', () => {
+    const { promptsDir, cleanup } = createTempPromptDir('or-test-prompt', TEST_PROMPT_TEXT);
+    process.env['PROMPT'] = 'or-test-prompt';
+    openaiConstructorCalls.length = 0; // clear before construction
+    try {
+      new ProjectionExtractor(
+        {
+          ...BASE_CONFIG,
+          openaiBaseUrl: 'https://openrouter.ai/api/v1',
+          openaiModel: 'text-embedding-3-small',
+        },
+        promptsDir,
+      );
+      // Two OpenAI instances are constructed in order: [0] LLM/chat client, [1] embedding client.
+      // The embedding client (last / index 1) must carry the OpenRouter baseURL.
+      // createGeminiClient (index 0) also uses OpenRouter, so we need BOTH to have it.
+      expect(openaiConstructorCalls).toHaveLength(2);
+      // Index 1 = embedding client — must have OpenRouter baseURL
+      expect(openaiConstructorCalls[1]?.baseURL).toBe('https://openrouter.ai/api/v1');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('embedding client has no baseURL when openaiBaseUrl is not provided', () => {
+    const { promptsDir, cleanup } = createTempPromptDir('legacy-test-prompt', TEST_PROMPT_TEXT);
+    process.env['PROMPT'] = 'legacy-test-prompt';
+    openaiConstructorCalls.length = 0;
+    try {
+      // BASE_CONFIG has no openaiBaseUrl — embedding client must NOT get a custom baseURL.
+      new ProjectionExtractor(BASE_CONFIG, promptsDir);
+      expect(openaiConstructorCalls).toHaveLength(2);
+      // Index 1 = embedding client — must NOT have a baseURL
+      expect(openaiConstructorCalls[1]?.baseURL).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('queryToProjections uses the configured openaiModel for embeddings', async () => {
+    const { promptsDir, cleanup } = createTempPromptDir('model-test-prompt', TEST_PROMPT_TEXT);
+    process.env['PROMPT'] = 'model-test-prompt';
+
+    const fullProjectionResponse = JSON.stringify({
+      chronos: 'January',
+      topos: 'Office',
+      agents: 'Alice',
+      theme: 'Planning',
+      cause: 'Deadline',
+      emotion: 'Focused',
+      certainty: 'Certain',
+    });
+
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: fullProjectionResponse } }],
+    });
+
+    // Return one embedding per projection text (7 axes in fullProjectionResponse)
+    const fakeEmbeddings = Array.from({ length: 7 }, (_, i) => ({
+      index: i,
+      embedding: new Array(1536).fill(0.1),
+    }));
+    mockEmbeddingsCreate.mockResolvedValueOnce({ data: fakeEmbeddings });
+
+    try {
+      const extractor = new ProjectionExtractor(
+        {
+          ...BASE_CONFIG,
+          openaiBaseUrl: 'https://openrouter.ai/api/v1',
+          openaiModel: 'text-embedding-3-small',
+        },
+        promptsDir,
+      );
+      const result = await extractor.queryToProjections('Test query about planning');
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // The embedding call must use the configured model string (not a hardcoded constant)
+      expect(mockEmbeddingsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'text-embedding-3-small',
+          dimensions: 1536,
+        }),
+      );
+      // All returned projections must have a 1536-dim embedding
+      for (const proj of result.value) {
+        expect(proj.embedding).toHaveLength(1536);
+      }
     } finally {
       cleanup();
     }
