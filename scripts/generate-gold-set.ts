@@ -101,11 +101,12 @@ async function fetchMemsWithChunks(pool: Pool): Promise<Map<string, CandidateMem
     [MEMSTORE_ID],
   );
 
-  // Fetch all chunks in one query, ordered by id for consistent concatenation
+  // Fetch all chunks in one query, joined via mems.chunk_ids (array FK),
+  // ordered by mc.id for consistent concatenation
   const chunksResult = await pool.query<{ mem_id: number; content: string }>(
-    `SELECT mc.mem_id, mc.content
-     FROM mem_chunks mc
-     JOIN mems m ON m.id = mc.mem_id
+    `SELECT m.id AS mem_id, mc.content
+     FROM mems m
+     JOIN mem_chunks mc ON mc.id = ANY(m.chunk_ids)
      WHERE m.memstore_id = $1
      ORDER BY mc.id ASC`,
     [MEMSTORE_ID],
