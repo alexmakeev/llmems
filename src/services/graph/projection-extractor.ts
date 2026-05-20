@@ -158,11 +158,18 @@ export class ProjectionExtractor {
     if (!embedResult.ok) return embedResult;
 
     const embeddings = embedResult.value;
+    if (embeddings.length !== rawProjections.length) {
+      return err(new Error(
+        `Embedding count mismatch: expected ${rawProjections.length}, got ${embeddings.length}`,
+      ));
+    }
+
     const projections: MemProjection[] = rawProjections.map((p, i) => ({
       memId: 'query',
       axis: p.axis,
       text: p.text,
-      embedding: embeddings[i],
+      // embeddings.length === rawProjections.length is verified above, so embeddings[i] is defined.
+      embedding: embeddings[i]!,
     }));
 
     this.logger.debug(
