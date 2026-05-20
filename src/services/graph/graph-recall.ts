@@ -8,7 +8,7 @@ import type { MemoryLogger } from '../../logging.js';
 import type { RecallResult, RecallNode, RecallEdge } from '../../types.js';
 import { GraphStore } from './graph-store.js';
 
-const MAX_GRAPH_NEIGHBORS = 10;
+const MAX_GRAPH_NEIGHBORS = parseInt(process.env['GRAPH_NEIGHBORS'] ?? '10', 10);
 
 export class GraphRecall {
   private readonly logger: MemoryLogger;
@@ -171,8 +171,15 @@ export class GraphRecall {
       weight: edge.relevance,
     }));
 
+    // Step 9: Merge all nodes and sort by similarity descending so that high-relevance
+    // graph neighbors appear within top-K when the caller slices [0..K] for metrics.
+    // Nodes with no similarity value sort last (treated as 0).
+    const mergedNodes = [...recallResult.nodes, ...neighborNodes].sort(
+      (a, b) => (b.similarity ?? 0) - (a.similarity ?? 0),
+    );
+
     return ok({
-      nodes: [...recallResult.nodes, ...neighborNodes],
+      nodes: mergedNodes,
       edges: [...recallResult.edges, ...recallEdges],
     });
   }

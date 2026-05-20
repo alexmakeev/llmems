@@ -1510,6 +1510,59 @@ describe('GraphRecall', () => {
     expect(result.value.edges).toHaveLength(1);
     expect(result.value.edges[0]).toMatchObject({ from: '10', to: '99', type: 'semantic', weight: 0.75 });
   });
+
+  it('enrichRecall merges graph neighbors into sorted order — high-relevance neighbor appears before low-similarity vector nodes', async () => {
+    // Regression test for the benchmark "identical metrics" bug (candidate c):
+    // graph neighbors were appended AFTER vector recall nodes, making them invisible
+    // to recallAtK/precisionAtK which slice [0..K].
+    // After the fix: all nodes are merged and sorted by similarity descending, so a
+    // high-relevance graph neighbor can appear within top-K.
+
+    // Seed: 3 vector recall nodes with relatively low similarity
+    const recallResult: RecallResult = {
+      nodes: [
+        { id: '10', text: 'A', tags: [], match: 'direct', timestamp: 1, similarity: 0.4 },
+        { id: '20', text: 'B', tags: [], match: 'direct', timestamp: 2, similarity: 0.3 },
+        { id: '30', text: 'C', tags: [], match: 'direct', timestamp: 3, similarity: 0.3 },
+      ],
+      edges: [],
+    };
+
+    // Graph edge: neighbor '99' with relevance 0.95 — higher than all vector nodes
+    const edges: GraphEdge[] = [
+      {
+        sourceMemId: '10',
+        targetMemId: '99',
+        edgeType: 'semantic' as const,
+        label: 'highly_related',
+        relevance: 0.95,
+        discoveryAxis: 'theme' as const,
+      },
+    ];
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockStore.getEdgesForMems.mockResolvedValueOnce(ok(edges));
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[99, 'High-relevance neighbor text']])));
+
+    const result = await graphRecall.enrichRecall(recallResult, CONTEXT_ID);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // 4 nodes total: 3 vector + 1 neighbor
+    expect(result.value.nodes).toHaveLength(4);
+
+    // The high-relevance neighbor (similarity=0.95) MUST be first in the sorted output
+    expect(result.value.nodes[0]?.id).toBe('99');
+    expect(result.value.nodes[0]?.similarity).toBe(0.95);
+
+    // The original vector node with highest similarity (0.4) must come second
+    expect(result.value.nodes[1]?.id).toBe('10');
+
+    // Verify that slicing at top-2 includes the graph neighbor — not just vector nodes
+    const top2Ids = result.value.nodes.slice(0, 2).map(n => n.id);
+    expect(top2Ids).toContain('99');
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
