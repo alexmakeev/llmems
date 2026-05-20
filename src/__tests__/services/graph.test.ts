@@ -235,7 +235,167 @@ describe('ProjectionExtractor', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 2. GraphEmbeddingService
+// 2. ProjectionExtractor — queryToProjections
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('ProjectionExtractor — queryToProjections', () => {
+  let extractor: ProjectionExtractor;
+  let savedEnv: NodeJS.ProcessEnv;
+
+  function makeQueryVector(dims = 1536): number[] {
+    return Array.from({ length: dims }, (_, i) => i / dims);
+  }
+
+  beforeEach(() => {
+    // Use resetAllMocks (not clearAllMocks) to also flush unconsumed Once-queues,
+    // preventing mock state from leaking into subsequent describe blocks.
+    vi.resetAllMocks();
+    savedEnv = { ...process.env };
+    process.env['PROMPT'] = 'baseline';
+    extractor = new ProjectionExtractor(TEST_CONFIG);
+  });
+
+  afterEach(() => {
+    // Also reset after each test so any unconsumed Once-mocks don't leak.
+    vi.resetAllMocks();
+    process.env = savedEnv;
+  });
+
+  it('returns per-axis projections each with an embedding for a full query', async () => {
+    const vectors = Array.from({ length: 7 }, (_, i) => makeQueryVector().map(v => v + i));
+
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeProjectionResponse() } }],
+    });
+    mockEmbeddingsCreate.mockResolvedValueOnce({
+      data: vectors.map((embedding, index) => ({ index, embedding })),
+    });
+
+    const result = await extractor.queryToProjections('Team meeting about Q1 planning?');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(7);
+    for (const p of result.value) {
+      expect(p.embedding).toBeDefined();
+      expect(p.embedding).toHaveLength(1536);
+    }
+    const axes = result.value.map(p => p.axis);
+    expect(axes).toContain('chronos');
+    expect(axes).toContain('topos');
+    expect(axes).toContain('agents');
+    expect(axes).toContain('theme');
+    expect(axes).toContain('cause');
+    expect(axes).toContain('emotion');
+    expect(axes).toContain('certainty');
+  });
+
+  it('uses the arm prompt (same system message as mem extraction)', async () => {
+    const vectors = [makeQueryVector()];
+
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeProjectionResponse({ topos: '', agents: '', theme: '', cause: '', emotion: '', certainty: '' }) } }],
+    });
+    mockEmbeddingsCreate.mockResolvedValueOnce({
+      data: [{ index: 0, embedding: vectors[0] }],
+    });
+
+    await extractor.queryToProjections('When did it happen?');
+
+    // The LLM must have been called with the arm system prompt
+    expect(mockChatCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: 'system' }),
+        ]),
+      }),
+    );
+    const callArgs = mockChatCreate.mock.calls[0]?.[0];
+    const systemMsg = callArgs?.messages?.find((m: { role: string }) => m.role === 'system');
+    expect(systemMsg?.content).toBeTruthy();
+    // Same system prompt as used by extractProjections
+    const extractorAny = extractor as unknown as { systemPrompt: string };
+    expect(systemMsg?.content).toBe(extractorAny.systemPrompt);
+  });
+
+  it('omits axes with empty projection text (only non-empty axes returned)', async () => {
+    const vectors = Array.from({ length: 5 }, (_, i) => makeQueryVector().map(v => v + i));
+
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeProjectionResponse({ topos: '', emotion: '' }) } }],
+    });
+    mockEmbeddingsCreate.mockResolvedValueOnce({
+      data: vectors.map((embedding, index) => ({ index, embedding })),
+    });
+
+    const result = await extractor.queryToProjections('Some question');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(5);
+    const axes = result.value.map(p => p.axis);
+    expect(axes).not.toContain('topos');
+    expect(axes).not.toContain('emotion');
+  });
+
+  it('returns Err when LLM call fails', async () => {
+    mockChatCreate.mockRejectedValueOnce(new Error('LLM timeout'));
+
+    const result = await extractor.queryToProjections('Some query');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/LLM call failed/i);
+  });
+
+  it('returns Err when LLM returns invalid JSON', async () => {
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'not valid json {{' } }],
+    });
+
+    const result = await extractor.queryToProjections('Some query');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/JSON parse failed/i);
+  });
+
+  it('returns Err when embedding call fails', async () => {
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeProjectionResponse() } }],
+    });
+    // MAX_RETRIES=3, so 4 total attempts — use Once per attempt to avoid leaking persistent state
+    mockEmbeddingsCreate
+      .mockRejectedValueOnce(new Error('OpenAI embedding error'))
+      .mockRejectedValueOnce(new Error('OpenAI embedding error'))
+      .mockRejectedValueOnce(new Error('OpenAI embedding error'))
+      .mockRejectedValueOnce(new Error('OpenAI embedding error'));
+
+    const result = await extractor.queryToProjections('Some query');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/Embedding failed after/i);
+  });
+
+  it('returns empty array when all axes are empty (no embeddings called)', async () => {
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeProjectionResponse({
+        chronos: '', topos: '', agents: '', theme: '', cause: '', emotion: '', certainty: '',
+      }) } }],
+    });
+
+    const result = await extractor.queryToProjections('Empty query');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(0);
+    expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 3. GraphEmbeddingService
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('GraphEmbeddingService', () => {
@@ -317,7 +477,7 @@ describe('GraphEmbeddingService', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 3. GraphStore
+// 4. GraphStore
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('GraphStore', () => {
@@ -625,7 +785,7 @@ describe('GraphStore', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 4. GraphBuilder
+// 5. GraphBuilder
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('GraphBuilder', () => {
@@ -928,7 +1088,7 @@ describe('GraphBuilder', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 5. GraphRecall
+// 6. GraphRecall
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('GraphRecall', () => {
@@ -1195,7 +1355,7 @@ describe('GraphRecall', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 6. GraphEnrichedLLMem
+// 7. GraphEnrichedLLMem
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('GraphEnrichedLLMem', () => {
