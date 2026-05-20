@@ -76,6 +76,23 @@ function loadSystemPrompt(configRoot: string): string {
 const EMBED_RETRY_DELAYS_MS = [1000, 2000, 4000] as const;
 const EMBED_MAX_RETRIES = 3;
 
+/**
+ * Maximum output tokens for projection extraction LLM call.
+ *
+ * Justification: a full 7-axis JSON response for a fact-rich Russian mem is
+ * typically 300-800 tokens, but can exceed 1500 tokens for very long mems with
+ * dense content in all axes.  Setting this to 4096 gives 2-5x headroom over
+ * the largest expected output, eliminating truncation while staying well within
+ * Gemini Flash's 8192-token output limit.
+ */
+const EXTRACTION_MAX_OUTPUT_TOKENS = 4096;
+
+/**
+ * Number of additional retries on JSON parse failure (transient bad responses).
+ * Total attempts = 1 (initial) + EXTRACTION_JSON_RETRY_COUNT (retries).
+ */
+const EXTRACTION_JSON_RETRY_COUNT = 2;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Raw projection result (axis + text, no memId, no embedding)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -194,62 +211,82 @@ export class ProjectionExtractor {
    * Call the LLM with the arm system prompt and return non-empty axis projections.
    * Both extractProjections and queryToProjections call this shared routine,
    * guaranteeing identical prompt, model, and axis semantics for mems and queries.
+   *
+   * Retries up to EXTRACTION_JSON_RETRY_COUNT times on JSON parse or schema
+   * validation failure (transient bad-output backstop).
    */
   private async extractRawProjections(text: string): Promise<Result<RawProjection[], Error>> {
     const userPrompt = `Воспоминание:\n${text}`;
 
-    let rawContent: string;
-    try {
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        messages: [
-          { role: 'system', content: this.systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        response_format: { type: 'json_object' },
-      });
+    const maxAttempts = 1 + EXTRACTION_JSON_RETRY_COUNT;
 
-      const choice = response.choices[0];
-      if (choice === undefined || choice.message.content === null) {
-        return err(new Error('LLM returned empty response'));
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // ── LLM call ────────────────────────────────────────────────────────────
+      let rawContent: string;
+      try {
+        const response = await this.client.chat.completions.create({
+          model: this.model,
+          messages: [
+            { role: 'system', content: this.systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          response_format: { type: 'json_object' },
+          max_tokens: EXTRACTION_MAX_OUTPUT_TOKENS,
+        });
+
+        const choice = response.choices[0];
+        if (choice === undefined || choice.message.content === null) {
+          return err(new Error('LLM returned empty response'));
+        }
+        rawContent = choice.message.content;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        this.logger.error({ err: message }, 'ProjectionExtractor: LLM call failed');
+        return err(new Error(`LLM call failed: ${message}`));
       }
-      rawContent = choice.message.content;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error({ err: message }, 'ProjectionExtractor: LLM call failed');
-      return err(new Error(`LLM call failed: ${message}`));
+
+      // ── Parse JSON ──────────────────────────────────────────────────────────
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawContent);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (attempt < maxAttempts - 1) {
+          this.logger.warn({ err: message, attempt }, 'ProjectionExtractor: JSON parse failed, retrying');
+          continue;
+        }
+        this.logger.error({ err: message, rawContent }, 'ProjectionExtractor: JSON parse failed');
+        return err(new Error(`JSON parse failed: ${message}`));
+      }
+
+      // ── Validate with zod ───────────────────────────────────────────────────
+      const validation = ProjectionResponseSchema.safeParse(parsed);
+      if (!validation.success) {
+        const message = validation.error.message;
+        if (attempt < maxAttempts - 1) {
+          this.logger.warn({ err: message, attempt }, 'ProjectionExtractor: schema validation failed, retrying');
+          continue;
+        }
+        this.logger.error({ err: message }, 'ProjectionExtractor: schema validation failed');
+        return err(new Error(`Schema validation failed: ${message}`));
+      }
+
+      const data: ProjectionResponse = validation.data;
+
+      // ── Collect non-empty projections across all axes ────────────────────────
+      const projections: RawProjection[] = SEMANTIC_AXES
+        .map((axis: SemanticAxis): RawProjection | null => {
+          const projText = data[axis].trim();
+          if (projText === '') return null;
+          return { axis, text: projText };
+        })
+        .filter((p): p is RawProjection => p !== null);
+
+      return ok(projections);
     }
 
-    // Parse JSON
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawContent);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error({ err: message, rawContent }, 'ProjectionExtractor: JSON parse failed');
-      return err(new Error(`JSON parse failed: ${message}`));
-    }
-
-    // Validate with zod
-    const validation = ProjectionResponseSchema.safeParse(parsed);
-    if (!validation.success) {
-      const message = validation.error.message;
-      this.logger.error({ err: message }, 'ProjectionExtractor: schema validation failed');
-      return err(new Error(`Schema validation failed: ${message}`));
-    }
-
-    const data: ProjectionResponse = validation.data;
-
-    // Collect non-empty projections across all axes
-    const projections: RawProjection[] = SEMANTIC_AXES
-      .map((axis: SemanticAxis): RawProjection | null => {
-        const projText = data[axis].trim();
-        if (projText === '') return null;
-        return { axis, text: projText };
-      })
-      .filter((p): p is RawProjection => p !== null);
-
-    return ok(projections);
+    // Should never reach here — loop always returns via continue or return.
+    return err(new Error('extractRawProjections: exhausted retries unexpectedly'));
   }
 
   // ──────────────────────────────────────────────────────────────────────────

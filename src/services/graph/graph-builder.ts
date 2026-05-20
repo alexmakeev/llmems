@@ -20,6 +20,27 @@ import type { IGraphEmbeddingService } from './embedding-service.js';
 import { createGeminiClient } from './llm-client.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Constants
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Maximum output tokens for the Gemini edge-proposal call.
+ *
+ * Justification: the prompt requests 10-20 edge proposals, each with fields
+ * source_id, target_id, edge_type (~10 chars), label (~30 chars), and relevance
+ * (float).  A worst-case 20-proposal JSON array is ~800-1200 tokens.  Setting
+ * this to 4096 gives 3-5x headroom, preventing truncation while staying within
+ * Gemini Flash's output limit.
+ */
+const EDGE_PROPOSAL_MAX_OUTPUT_TOKENS = 4096;
+
+/**
+ * Number of additional retries on JSON parse / schema validation failure.
+ * Total attempts = 1 (initial) + EDGE_PROPOSAL_JSON_RETRY_COUNT (retries).
+ */
+const EDGE_PROPOSAL_JSON_RETRY_COUNT = 2;
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Zod schema for Gemini edge proposals
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -273,52 +294,73 @@ export class GraphBuilder {
   private async callGemini(
     prompt: string,
   ): Promise<Result<z.infer<typeof EdgeProposalsArraySchema>, Error>> {
-    let rawContent: string;
-    try {
-      const response = await this.geminiClient.chat.completions.create({
-        model: this.geminiModel,
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-      });
+    const maxAttempts = 1 + EDGE_PROPOSAL_JSON_RETRY_COUNT;
 
-      const choice = response.choices[0];
-      if (choice === undefined || choice.message.content === null) {
-        return err(new Error('Gemini returned empty response'));
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // ── LLM call ──────────────────────────────────────────────────────────
+      let rawContent: string;
+      try {
+        const response = await this.geminiClient.chat.completions.create({
+          model: this.geminiModel,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+          max_tokens: EDGE_PROPOSAL_MAX_OUTPUT_TOKENS,
+        });
+
+        const choice = response.choices[0];
+        if (choice === undefined || choice.message.content === null) {
+          return err(new Error('Gemini returned empty response'));
+        }
+        rawContent = choice.message.content;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        this.logger.error({ err: message }, 'GraphBuilder.callGemini: API call failed');
+        return err(new Error(`Gemini API call failed: ${message}`));
       }
-      rawContent = choice.message.content;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error({ err: message }, 'GraphBuilder.callGemini: API call failed');
-      return err(new Error(`Gemini API call failed: ${message}`));
+
+      // ── Parse JSON — Gemini may return a JSON object wrapping the array ────
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawContent);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (attempt < maxAttempts - 1) {
+          this.logger.warn({ err: message, attempt }, 'GraphBuilder.callGemini: JSON parse failed, retrying');
+          continue;
+        }
+        this.logger.error({ err: message, rawContent }, 'GraphBuilder.callGemini: JSON parse failed');
+        return err(new Error(`Gemini JSON parse failed: ${message}`));
+      }
+
+      // ── Handle case where Gemini wraps the array in an object ─────────────
+      const arrayToValidate = Array.isArray(parsed)
+        ? parsed
+        : (parsed !== null && typeof parsed === 'object' ? findArrayInObject(parsed as Record<string, unknown>) : null);
+
+      if (arrayToValidate === null) {
+        if (attempt < maxAttempts - 1) {
+          this.logger.warn({ attempt }, 'GraphBuilder.callGemini: response contained no JSON array, retrying');
+          continue;
+        }
+        return err(new Error('Gemini response did not contain a JSON array'));
+      }
+
+      const validation = EdgeProposalsArraySchema.safeParse(arrayToValidate);
+      if (!validation.success) {
+        const message = validation.error.message;
+        if (attempt < maxAttempts - 1) {
+          this.logger.warn({ err: message, attempt }, 'GraphBuilder.callGemini: schema validation failed, retrying');
+          continue;
+        }
+        this.logger.error({ err: message }, 'GraphBuilder.callGemini: schema validation failed');
+        return err(new Error(`Gemini response schema validation failed: ${message}`));
+      }
+
+      return ok(validation.data);
     }
 
-    // Parse JSON — Gemini may return a JSON object wrapping the array
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawContent);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error({ err: message, rawContent }, 'GraphBuilder.callGemini: JSON parse failed');
-      return err(new Error(`Gemini JSON parse failed: ${message}`));
-    }
-
-    // Handle case where Gemini wraps the array in an object
-    const arrayToValidate = Array.isArray(parsed)
-      ? parsed
-      : (parsed !== null && typeof parsed === 'object' ? findArrayInObject(parsed as Record<string, unknown>) : null);
-
-    if (arrayToValidate === null) {
-      return err(new Error('Gemini response did not contain a JSON array'));
-    }
-
-    const validation = EdgeProposalsArraySchema.safeParse(arrayToValidate);
-    if (!validation.success) {
-      const message = validation.error.message;
-      this.logger.error({ err: message }, 'GraphBuilder.callGemini: schema validation failed');
-      return err(new Error(`Gemini response schema validation failed: ${message}`));
-    }
-
-    return ok(validation.data);
+    // Should never reach here — loop always returns via continue or return.
+    return err(new Error('callGemini: exhausted retries unexpectedly'));
   }
 }
 

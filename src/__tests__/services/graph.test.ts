@@ -170,9 +170,12 @@ describe('ProjectionExtractor', () => {
   });
 
   it('returns err when LLM returns invalid JSON', async () => {
-    mockChatCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: 'this is not json {{{' } }],
-    });
+    // All 3 attempts (1 initial + 2 retries) return malformed JSON
+    const badResponse = { choices: [{ message: { content: 'this is not json {{{' } }] };
+    mockChatCreate
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse);
 
     const result = await extractor.extractProjections('42', 'Some text');
 
@@ -206,15 +209,12 @@ describe('ProjectionExtractor', () => {
   });
 
   it('returns err when schema validation fails (missing fields)', async () => {
-    mockChatCreate.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({ chronos: 'yes' }), // missing other required fields
-          },
-        },
-      ],
-    });
+    // All 3 attempts (1 initial + 2 retries) return schema-invalid JSON
+    const badResponse = { choices: [{ message: { content: JSON.stringify({ chronos: 'yes' }) } }] };
+    mockChatCreate
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse);
 
     const result = await extractor.extractProjections('42', 'Some text');
 
@@ -231,6 +231,65 @@ describe('ProjectionExtractor', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toMatch(/LLM call failed/i);
+  });
+
+  it('passes max_tokens to the LLM call', async () => {
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeProjectionResponse() } }],
+    });
+
+    await extractor.extractProjections('42', 'Some mem text');
+
+    expect(mockChatCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        max_tokens: expect.any(Number),
+      }),
+    );
+    // The value must be >=4096 (generous headroom for full 7-axis JSON)
+    const callArgs = mockChatCreate.mock.calls[0]?.[0] as { max_tokens: number };
+    expect(callArgs.max_tokens).toBeGreaterThanOrEqual(4096);
+  });
+
+  it('retries and succeeds when first response is malformed JSON then valid', async () => {
+    // First call returns malformed JSON
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ invalid json' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: makeProjectionResponse() } }] });
+
+    const result = await extractor.extractProjections('42', 'Some mem text');
+
+    expect(result.ok).toBe(true);
+    // Two LLM calls were made (retry on failure)
+    expect(mockChatCreate).toHaveBeenCalledTimes(2);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(7);
+  });
+
+  it('retries and succeeds when first response fails schema validation then valid', async () => {
+    // First call returns valid JSON but wrong schema (missing required fields)
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ chronos: 'only' }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: makeProjectionResponse() } }] });
+
+    const result = await extractor.extractProjections('42', 'Some mem text');
+
+    expect(result.ok).toBe(true);
+    expect(mockChatCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns err after exhausting all retries on persistent JSON parse failures', async () => {
+    // All 3 attempts return malformed JSON (1 initial + 2 retries)
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ bad' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ still bad' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ still bad 2' } }] });
+
+    const result = await extractor.extractProjections('42', 'Some mem text');
+
+    expect(result.ok).toBe(false);
+    expect(mockChatCreate).toHaveBeenCalledTimes(3);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/JSON parse failed/i);
   });
 });
 
@@ -349,9 +408,12 @@ describe('ProjectionExtractor — queryToProjections', () => {
   });
 
   it('returns Err when LLM returns invalid JSON', async () => {
-    mockChatCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: 'not valid json {{' } }],
-    });
+    // All 3 attempts (1 initial + 2 retries) return malformed JSON
+    const badResponse = { choices: [{ message: { content: 'not valid json {{' } }] };
+    mockChatCreate
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse);
 
     const result = await extractor.queryToProjections('Some query');
 
@@ -1084,6 +1146,102 @@ describe('GraphBuilder', () => {
     expect(result.value).toHaveLength(1);
     expect(result.value[0]?.targetMemId).toBe('100');
     expect(result.value[0]?.edgeType).toBe('temporal');
+  });
+
+  it('callGemini passes max_tokens to the LLM call', async () => {
+    const projections = makeProjections();
+    const embeddings = makeEmbeddings(2);
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockExtractor.extractProjections.mockResolvedValueOnce(ok(projections));
+    mockEmbedder.embedTexts.mockResolvedValueOnce(ok(embeddings));
+    mockStore.saveProjections.mockResolvedValueOnce(ok(undefined));
+
+    mockStore.findSimilarByAxis
+      .mockResolvedValueOnce(ok([
+        { memId: '100', axis: 'chronos', similarity: 0.88, projectionText: 'January period' },
+      ]))
+      .mockResolvedValue(ok([]));
+
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[100, 'Another meeting in January']])));
+    mockChatCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: makeEdgeProposalJson() } }],
+    });
+    mockStore.saveEdges.mockResolvedValueOnce(ok(undefined));
+
+    await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
+
+    expect(mockChatCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        max_tokens: expect.any(Number),
+      }),
+    );
+    // The value must be >=4096 (generous headroom for 10-20 edge proposals)
+    const callArgs = mockChatCreate.mock.calls[0]?.[0] as { max_tokens: number };
+    expect(callArgs.max_tokens).toBeGreaterThanOrEqual(4096);
+  });
+
+  it('callGemini retries and succeeds when first response is malformed JSON then valid', async () => {
+    const projections = makeProjections();
+    const embeddings = makeEmbeddings(2);
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockExtractor.extractProjections.mockResolvedValueOnce(ok(projections));
+    mockEmbedder.embedTexts.mockResolvedValueOnce(ok(embeddings));
+    mockStore.saveProjections.mockResolvedValueOnce(ok(undefined));
+
+    mockStore.findSimilarByAxis
+      .mockResolvedValueOnce(ok([
+        { memId: '100', axis: 'chronos', similarity: 0.88, projectionText: 'January period' },
+      ]))
+      .mockResolvedValue(ok([]));
+
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[100, 'Another meeting in January']])));
+
+    // First Gemini call returns malformed JSON, second returns valid
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ invalid json' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: makeEdgeProposalJson() } }] });
+
+    mockStore.saveEdges.mockResolvedValueOnce(ok(undefined));
+
+    const result = await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
+
+    expect(result.ok).toBe(true);
+    expect(mockChatCreate).toHaveBeenCalledTimes(2);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(1);
+  });
+
+  it('callGemini returns err after exhausting all retries on persistent malformed JSON', async () => {
+    const projections = makeProjections();
+    const embeddings = makeEmbeddings(2);
+
+    mockStore.getMemstoreId.mockResolvedValueOnce(ok(MEMSTORE_ID));
+    mockExtractor.extractProjections.mockResolvedValueOnce(ok(projections));
+    mockEmbedder.embedTexts.mockResolvedValueOnce(ok(embeddings));
+    mockStore.saveProjections.mockResolvedValueOnce(ok(undefined));
+
+    mockStore.findSimilarByAxis
+      .mockResolvedValueOnce(ok([
+        { memId: '100', axis: 'chronos', similarity: 0.88, projectionText: 'January period' },
+      ]))
+      .mockResolvedValue(ok([]));
+
+    mockStore.getMemTexts.mockResolvedValueOnce(ok(new Map([[100, 'Another meeting in January']])));
+
+    // All 3 Gemini attempts return malformed JSON (1 initial + 2 retries)
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ bad1' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ bad2' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{ bad3' } }] });
+
+    const result = await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
+
+    expect(result.ok).toBe(false);
+    expect(mockChatCreate).toHaveBeenCalledTimes(3);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/Gemini JSON parse failed/i);
   });
 });
 

@@ -257,10 +257,12 @@ describe('Ingest pipeline integration (GraphBuilder → ProjectionExtractor → 
     // DB: getMemstoreId
     mockPool.query.mockResolvedValueOnce({ rows: [{ id: MEMSTORE_ID }] });
 
-    // Gemini returns malformed JSON
-    mockChatCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: 'not valid json' } }],
-    });
+    // Gemini returns malformed JSON on all 3 attempts (1 initial + 2 retries)
+    const badResponse = { choices: [{ message: { content: 'not valid json' } }] };
+    mockChatCreate
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse)
+      .mockResolvedValueOnce(badResponse);
 
     const result = await builder.processMem(MEM_ID, MEM_TEXT, CONTEXT_ID);
 
