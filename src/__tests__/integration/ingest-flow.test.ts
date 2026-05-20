@@ -47,7 +47,7 @@ vi.mock('../../retry-sleep.ts', () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type pg from 'pg';
 
 import { GraphBuilder } from '../../services/graph/graph-builder.ts';
@@ -106,6 +106,8 @@ describe('Ingest pipeline integration (GraphBuilder → ProjectionExtractor → 
   const MEMSTORE_ID = 3;
   const MEM_TEXT = 'We had a team meeting in January to discuss Q1 planning. Alex led the session.';
 
+  let savedEnv: NodeJS.ProcessEnv;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockPoolClient.query.mockReset();
@@ -113,11 +115,19 @@ describe('Ingest pipeline integration (GraphBuilder → ProjectionExtractor → 
     mockPool.query.mockReset();
     mockPool.connect.mockResolvedValue(mockPoolClient);
 
+    // PROMPT must be set so ProjectionExtractor can load the prompt file
+    savedEnv = { ...process.env };
+    process.env['PROMPT'] = 'baseline';
+
     // Assemble the real dependency graph — same wiring as production
     store = new GraphStore(mockPool as unknown as pg.Pool);
     extractor = new ProjectionExtractor(GRAPH_CONFIG);
     embedder = new GraphEmbeddingService(GRAPH_CONFIG);
     builder = new GraphBuilder(store, extractor, embedder, GRAPH_CONFIG);
+  });
+
+  afterEach(() => {
+    process.env = savedEnv;
   });
 
   it('full success: projections extracted → embedded → saved → neighbors searched → edges proposed and saved', async () => {

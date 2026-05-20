@@ -1,7 +1,15 @@
 // src/services/graph/projection-extractor.ts
 // Extracts 7 semantic projections from a mem's text using an LLM (Gemini Flash via OpenRouter).
+//
+// PROMPT env var contract:
+//   PROMPT — required. Name of the prompt file (without extension) inside config/prompts/.
+//            Example: PROMPT=baseline → loads config/prompts/baseline.md
+//   Fails fast at construction if PROMPT is unset or the resolved file does not exist.
+//   Prompt is loaded once at construction and reused for every extractProjections call.
 
 import type OpenAI from 'openai';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { z } from 'zod';
 import { ok, err } from '../../shared/result.js';
 import type { Result } from '../../shared/result.js';
@@ -28,21 +36,35 @@ const ProjectionResponseSchema = z.object({
 type ProjectionResponse = z.infer<typeof ProjectionResponseSchema>;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Prompt
+// Prompt loading — fail fast, no fallback
 // ──────────────────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `Ты извлекаешь семантические проекции из воспоминания. Для каждой оси выдели ключевую информацию в 1-2 предложениях. Если ось не представлена в тексте, верни пустую строку.
-
-Оси:
-- chronos: Когда это произошло? Временные маркеры, даты, последовательность событий
-- topos: Где это произошло? Места, локации, география
-- agents: Кто участвовал? Люди, роли, отношения между ними
-- theme: О чём это? Тема, предмет, область
-- cause: Почему? Причины, мотивы, последствия
-- emotion: Какие эмоции? Настроение, тон, интенсивность переживаний
-- certainty: Насколько уверен? Факт, предположение, слух, мнение
-
-Отвечай строго JSON без markdown-обёртки.`;
+/**
+ * Load the system prompt from config/prompts/${PROMPT}.md.
+ * Throws synchronously if PROMPT is unset or the file does not exist.
+ *
+ * @param configRoot - project root directory; resolved file is configRoot/config/prompts/<PROMPT>.md.
+ *                     Defaults to process.cwd(). Exposed for testing with temp dirs.
+ */
+function loadSystemPrompt(configRoot: string): string {
+  const promptName = process.env['PROMPT'];
+  if (promptName === undefined || promptName === '') {
+    throw new Error(
+      'Required env var PROMPT is not set. ' +
+      'Set PROMPT to the name of a prompt file in config/prompts/ (e.g. PROMPT=baseline).',
+    );
+  }
+  const promptPath = join(configRoot, 'config', 'prompts', `${promptName}.md`);
+  try {
+    return readFileSync(promptPath, 'utf-8');
+  } catch {
+    throw new Error(
+      `Prompt file not found: config/prompts/${promptName}.md ` +
+      `(resolved to ${promptPath}). ` +
+      `Create the file or set PROMPT to an existing prompt name.`,
+    );
+  }
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // ProjectionExtractor
@@ -52,8 +74,18 @@ export class ProjectionExtractor {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly logger: MemoryLogger;
+  private readonly systemPrompt: string;
 
-  constructor(config: Pick<GraphConfig, 'geminiApiKey' | 'geminiModel' | 'openaiApiKey'>) {
+  /**
+   * @param config - LLM configuration.
+   * @param configRoot - Project root for resolving config/prompts/<PROMPT>.md.
+   *                     Defaults to process.cwd(). Override in tests to use a temp dir.
+   */
+  constructor(
+    config: Pick<GraphConfig, 'geminiApiKey' | 'geminiModel' | 'openaiApiKey'>,
+    configRoot: string = process.cwd(),
+  ) {
+    this.systemPrompt = loadSystemPrompt(configRoot);
     this.client = createGeminiClient(config);
     this.model = config.geminiModel;
     this.logger = createMemoryLogger({ name: 'projection-extractor' });
@@ -74,7 +106,7 @@ export class ProjectionExtractor {
       const response = await this.client.chat.completions.create({
         model: this.model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: this.systemPrompt },
           { role: 'user', content: userPrompt },
         ],
         response_format: { type: 'json_object' },

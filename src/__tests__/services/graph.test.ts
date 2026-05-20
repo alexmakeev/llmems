@@ -2,7 +2,7 @@
 // Tests for the graph module: ProjectionExtractor, GraphEmbeddingService, GraphStore,
 // GraphBuilder, GraphRecall, GraphEnrichedLLMem.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Hoisted mock objects — defined before vi.mock() hoisting
@@ -107,10 +107,18 @@ function makeProjectionResponse(overrides: Partial<Record<string, string>> = {})
 
 describe('ProjectionExtractor', () => {
   let extractor: ProjectionExtractor;
+  let savedEnv: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    savedEnv = { ...process.env };
+    // PROMPT must be set; use the real baseline.md file in the project
+    process.env['PROMPT'] = 'baseline';
     extractor = new ProjectionExtractor(TEST_CONFIG);
+  });
+
+  afterEach(() => {
+    process.env = savedEnv;
   });
 
   it('returns 7 projections when all axes have content', async () => {
