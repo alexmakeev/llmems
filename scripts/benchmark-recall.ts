@@ -6,15 +6,17 @@
 //   npx tsx scripts/benchmark-recall.ts
 //
 // Configurable via env vars:
-//   HIT_THRESHOLD    (default 0.5)  — minimum similarity to count as a "hit"
 //   GRAPH_NEIGHBORS  (default 10)   — override MAX_GRAPH_NEIGHBORS
 //   TEST_NAME        (default "baseline") — label for this run
 //
+// Requires:
+//   sandboxes/gold-set-{MEMSTORE_ID}.json — frozen gold set (generate with generate-gold-set.ts)
+//
 // Output:
-//   sandboxes/benchmark-{TEST_NAME}.json — full raw results
-//   console — per-axis and per-category summary
+//   sandboxes/benchmark-{TEST_NAME}.json — full raw results with recall@K / precision@K metrics
+//   console — per-strategy recall summary
 
-import { readFileSync, mkdirSync, writeFileSync } from 'fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { Pool } from 'pg';
 import OpenAI from 'openai';
 import pgvector from 'pgvector/pg';
@@ -33,6 +35,7 @@ import {
   aggregateIntersection,
 } from '../src/services/graph/benchmark-aggregation.js';
 import type { AggregatedEntry, PerAxisResults } from '../src/services/graph/benchmark-aggregation.js';
+import { recallAtK, precisionAtK } from '../src/services/graph/recall-metrics.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -51,15 +54,23 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-const HIT_THRESHOLD = parseFloat(process.env['HIT_THRESHOLD'] ?? '0.5');
 const GRAPH_NEIGHBORS = parseInt(process.env['GRAPH_NEIGHBORS'] ?? '10', 10);
 const TEST_NAME = process.env['TEST_NAME'] ?? 'baseline';
 
-const QUESTIONS_FILE = '/home/alexmak/llmems-old/main/sandboxes/recall-test-questions.json';
-const RESULTS_FILE = `/home/alexmak/llmems/main/sandboxes/benchmark-${TEST_NAME}.json`;
-
 const MEMSTORE_ID = requireEnvInt('MEMSTORE_ID');
 const CONTEXT_ID = 'benchmark-katya-year';
+
+const QUESTIONS_FILE = '/home/alexmak/llmems-old/main/sandboxes/recall-test-questions.json';
+const RESULTS_FILE = `/home/alexmak/llmems/main/sandboxes/benchmark-${TEST_NAME}.json`;
+const GOLD_SET_FILE = `/home/alexmak/llmems/main/sandboxes/gold-set-${MEMSTORE_ID}.json`;
+
+// Fail fast if gold set is missing — do NOT silently fall back to similarity-based hits
+if (!existsSync(GOLD_SET_FILE)) {
+  throw new Error(
+    `Gold set file not found: ${GOLD_SET_FILE}\n` +
+    `Generate it first with: MEMSTORE_ID=${MEMSTORE_ID} OPENROUTER_API_KEY=... npx tsx scripts/generate-gold-set.ts`,
+  );
+}
 
 const PROJECTION_THRESHOLD = 0.3;   // min similarity to even return from DB
 const PROJECTION_LIMIT = 5;         // top-N per axis
@@ -76,6 +87,7 @@ interface TestQuestion {
   question: string;
   difficulty: string;
   expected_facts: string[];
+  source_sessions: string[];
 }
 
 interface AxisMatch {
@@ -88,7 +100,15 @@ interface AxisMatch {
 interface QuestionAxisResult {
   axis: SemanticAxis;
   matches: AxisMatch[];
-  hitCount: number;  // matches with similarity >= HIT_THRESHOLD
+}
+
+/** Per-strategy recall@K and precision@K metrics for one question. */
+interface QuestionMetrics {
+  /** null = excluded (expectedMemIds was empty for this question) */
+  recallAt5: number | null;
+  recallAt10: number | null;
+  precisionAt5: number;
+  precisionAt10: number;
 }
 
 interface QuestionResult {
@@ -105,7 +125,36 @@ interface QuestionResult {
   projectionMaxPerAxis: AggregatedEntry[];
   projectionSumAcrossAxes: AggregatedEntry[];
   projectionIntersection: AggregatedEntry[];
+  /** Per-strategy recall@K / precision@K metrics vs gold set. */
+  metrics: {
+    vectorRecall: QuestionMetrics;
+    graphEnrichedRecall: QuestionMetrics;
+    projectionMaxPerAxis: QuestionMetrics;
+    projectionSumAcrossAxes: QuestionMetrics;
+    projectionIntersection: QuestionMetrics;
+  };
+  /** Number of expected mems in gold set for this question (0 = excluded from recall avg). */
+  goldExpectedCount: number;
   error?: string;
+}
+
+/** Gold set file format */
+interface GoldSetFile {
+  memstoreId: number;
+  generatedAt: string;
+  judgeModel: string;
+  questions: Record<string, {
+    sourceSessions: string[];
+    candidateMemIds: string[];
+    expectedMemIds: string[];
+    factCoverage: Record<string, string[]>;
+  }>;
+  stats: {
+    questionsWithZeroExpected: number;
+    meanExpected: number;
+    medianExpected: number;
+    maxExpected: number;
+  };
 }
 
 interface SimilarityBuckets {
@@ -129,12 +178,20 @@ interface AxisStats {
   axis: SemanticAxis;
   totalProjectionsInDB: number;
   avgSimilarity: number;
-  /** % of questions where this axis returned at least 1 hit >= HIT_THRESHOLD */
-  hitRate: number;
-  hitCount: number;
-  totalQueries: number;
   top3Matches: TopMatch[];
   similarityDistribution: SimilarityBuckets;
+}
+
+/** Aggregate recall@K and precision@K for one strategy across all questions. */
+interface StrategyAggregate {
+  strategy: string;
+  /** Mean recall@5 across questions with non-empty expectedMemIds (excluded count in excludedQuestions). */
+  meanRecallAt5: number;
+  meanRecallAt10: number;
+  meanPrecisionAt5: number;
+  meanPrecisionAt10: number;
+  /** Number of questions excluded from recall averaging (expectedMemIds was empty). */
+  excludedQuestions: number;
 }
 
 interface CategoryStats {
@@ -146,8 +203,6 @@ interface CategoryStats {
   avgGraphAddedCount: number;
   /** Axis with highest avg similarity for this category */
   bestAxis: SemanticAxis | null;
-  /** % of questions in this category with at least 1 hit (any axis) >= HIT_THRESHOLD */
-  hitRate: number;
 }
 
 interface BenchmarkOutput {
@@ -160,21 +215,13 @@ interface BenchmarkOutput {
     memstoreId: number;
     contextId: string;
     projectionThreshold: number;
-    hitThreshold: number;
     graphNeighbors: number;
+    goldSetFile: string;
+    goldSetGeneratedAt: string;
+    goldSetJudgeModel: string;
   };
-  overall: {
-    avgVectorRecallCount: number;
-    avgProjectionMatchCount: number;
-    avgGraphEnrichedCount: number;
-    avgGraphAddedCount: number;
-    /** % of questions where vectorRecall returned >= 1 result */
-    vectorHitRate: number;
-    /** % of questions where any axis returned >= 1 match >= HIT_THRESHOLD */
-    projectionHitRate: number;
-    /** % of questions where graph enrichment added at least 1 node */
-    graphEnrichmentRate: number;
-  };
+  /** Per-strategy aggregate recall@K / precision@K across all non-excluded questions. */
+  strategyAggregates: StrategyAggregate[];
   axisStats: AxisStats[];
   categoryStats: CategoryStats[];
   questionResults: QuestionResult[];
@@ -300,6 +347,11 @@ const PROJECTION_AGGREGATION_TOP_K = GRAPH_NEIGHBORS;
 
 // ── Main benchmark loop ────────────────────────────────────────────────────────
 
+/** Null metric stub for error cases (question failed to embed/run). */
+function nullMetrics(): QuestionMetrics {
+  return { recallAt5: null, recallAt10: null, precisionAt5: 0, precisionAt10: 0 };
+}
+
 async function runBenchmark(
   pool: Pool,
   memStore: PostgresMemStore,
@@ -307,6 +359,7 @@ async function runBenchmark(
   openai: OpenAI,
   projectionExtractor: ProjectionExtractor,
   questions: TestQuestion[],
+  goldSet: GoldSetFile['questions'],
 ): Promise<QuestionResult[]> {
   const results: QuestionResult[] = [];
 
@@ -316,6 +369,14 @@ async function runBenchmark(
 
     const progress = `[${String(i + 1).padStart(3)}/${questions.length}]`;
     process.stdout.write(`${progress} ${question.id} (${question.category}/${question.difficulty}): ${question.question.slice(0, 50)}...\n`);
+
+    const emptyMetrics = {
+      vectorRecall: nullMetrics(),
+      graphEnrichedRecall: nullMetrics(),
+      projectionMaxPerAxis: nullMetrics(),
+      projectionSumAcrossAxes: nullMetrics(),
+      projectionIntersection: nullMetrics(),
+    };
 
     // ── Embed question ──────────────────────────────────────────────────────
     let questionEmbedding: number[];
@@ -341,6 +402,8 @@ async function runBenchmark(
           projectionMaxPerAxis: [],
           projectionSumAcrossAxes: [],
           projectionIntersection: [],
+          metrics: emptyMetrics,
+          goldExpectedCount: 0,
           error: 'empty embedding response',
         });
         continue;
@@ -362,6 +425,8 @@ async function runBenchmark(
         projectionMaxPerAxis: [],
         projectionSumAcrossAxes: [],
         projectionIntersection: [],
+        metrics: emptyMetrics,
+        goldExpectedCount: 0,
         error: message,
       });
       if (i + 1 < questions.length) await sleep(API_DELAY_MS);
@@ -384,11 +449,15 @@ async function runBenchmark(
     // ── Graph enrichment ────────────────────────────────────────────────────
     let graphEnrichedCount = vectorNodes.length;
     let graphAddedCount = 0;
+    let graphEnrichedNodeIds: string[] = vectorNodes.map(n => n.id);
+
     try {
       const enrichedResult = await graphRecall.enrichRecall(vectorResult, CONTEXT_ID);
       if (enrichedResult.ok) {
-        graphEnrichedCount = enrichedResult.value.nodes.length;
+        const enrichedNodes = enrichedResult.value.nodes;
+        graphEnrichedCount = enrichedNodes.length;
         graphAddedCount = graphEnrichedCount - vectorNodes.length;
+        graphEnrichedNodeIds = enrichedNodes.map(n => n.id);
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -399,12 +468,10 @@ async function runBenchmark(
     const axisResults: QuestionAxisResult[] = [];
     for (const axis of SEMANTIC_AXES) {
       const matches = await runAxisRecall(pool, questionEmbedding, axis);
-      const hitCount = matches.filter(m => m.similarity >= HIT_THRESHOLD).length;
-      axisResults.push({ axis, matches, hitCount });
+      axisResults.push({ axis, matches });
     }
 
     const totalAxisMatches = axisResults.reduce((sum, ar) => sum + ar.matches.length, 0);
-    const totalAxisHits = axisResults.reduce((sum, ar) => sum + ar.hitCount, 0);
 
     // ── True per-axis projection recall + 3 aggregation strategies ─────────────
     const perAxisResults = await runTrueProjectionRecall(
@@ -417,11 +484,32 @@ async function runBenchmark(
     const projectionSumAcrossAxes = aggregateSumAcrossAxes(perAxisResults).slice(0, PROJECTION_AGGREGATION_TOP_K);
     const projectionIntersection = aggregateIntersection(perAxisResults).slice(0, PROJECTION_AGGREGATION_TOP_K);
 
+    // ── Compute recall@K and precision@K vs gold set ────────────────────────
+    const goldEntry = goldSet[question.id];
+    const expectedMemIds = new Set(goldEntry?.expectedMemIds ?? []);
+    const goldExpectedCount = expectedMemIds.size;
+
+    const computeMetrics = (ranked: string[]): QuestionMetrics => ({
+      recallAt5: recallAtK(ranked, expectedMemIds, 5),
+      recallAt10: recallAtK(ranked, expectedMemIds, 10),
+      precisionAt5: precisionAtK(ranked, expectedMemIds, 5),
+      precisionAt10: precisionAtK(ranked, expectedMemIds, 10),
+    });
+
+    const metrics = {
+      vectorRecall: computeMetrics(vectorNodes.map(n => n.id)),
+      graphEnrichedRecall: computeMetrics(graphEnrichedNodeIds),
+      projectionMaxPerAxis: computeMetrics(projectionMaxPerAxis.map(e => e.memId)),
+      projectionSumAcrossAxes: computeMetrics(projectionSumAcrossAxes.map(e => e.memId)),
+      projectionIntersection: computeMetrics(projectionIntersection.map(e => e.memId)),
+    };
+
     console.log(
       `  vec:${vectorNodes.length} graph+:${graphAddedCount}` +
-      ` axisMatches:${totalAxisMatches} axisHits:${totalAxisHits}` +
+      ` axisMatches:${totalAxisMatches}` +
       ` projAxes:${perAxisResults.size}` +
-      ` projTop:${projectionMaxPerAxis.length}/${projectionSumAcrossAxes.length}/${projectionIntersection.length}`,
+      ` projTop:${projectionMaxPerAxis.length}/${projectionSumAcrossAxes.length}/${projectionIntersection.length}` +
+      ` gold:${goldExpectedCount} recall@10:${metrics.vectorRecall.recallAt10?.toFixed(2) ?? 'excl'}`,
     );
 
     results.push({
@@ -437,6 +525,8 @@ async function runBenchmark(
       projectionMaxPerAxis,
       projectionSumAcrossAxes,
       projectionIntersection,
+      metrics,
+      goldExpectedCount,
     });
   }
 
@@ -445,13 +535,73 @@ async function runBenchmark(
 
 // ── Statistics aggregation ─────────────────────────────────────────────────────
 
+/**
+ * Compute mean of an array of non-null numbers.
+ * Returns 0 for empty input.
+ */
+function meanOf(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((s, v) => s + v, 0) / values.length;
+}
+
+/**
+ * Build StrategyAggregate for one strategy key across all succeeded question results.
+ * Questions where expectedMemIds was empty (recall = null) are excluded from recall averaging
+ * and counted in excludedQuestions.
+ */
+function buildStrategyAggregate(
+  strategy: string,
+  key: keyof QuestionResult['metrics'],
+  succeeded: QuestionResult[],
+): StrategyAggregate {
+  const recallAt5Values: number[] = [];
+  const recallAt10Values: number[] = [];
+  const precisionAt5Values: number[] = [];
+  const precisionAt10Values: number[] = [];
+  let excludedQuestions = 0;
+
+  for (const qr of succeeded) {
+    const m = qr.metrics[key];
+    if (m.recallAt5 === null) {
+      // Excluded question: expectedMemIds was empty
+      excludedQuestions++;
+    } else {
+      recallAt5Values.push(m.recallAt5);
+    }
+    if (m.recallAt10 !== null) {
+      recallAt10Values.push(m.recallAt10);
+    }
+    precisionAt5Values.push(m.precisionAt5);
+    precisionAt10Values.push(m.precisionAt10);
+  }
+
+  return {
+    strategy,
+    meanRecallAt5: meanOf(recallAt5Values),
+    meanRecallAt10: meanOf(recallAt10Values),
+    meanPrecisionAt5: meanOf(precisionAt5Values),
+    meanPrecisionAt10: meanOf(precisionAt10Values),
+    excludedQuestions,
+  };
+}
+
 async function aggregateStats(
   pool: Pool,
   questionResults: QuestionResult[],
   allQuestions: TestQuestion[],
+  goldFile: GoldSetFile,
 ): Promise<BenchmarkOutput> {
   const succeeded = questionResults.filter(r => r.error === undefined);
   const failed = questionResults.filter(r => r.error !== undefined);
+
+  // ── Per-strategy recall aggregates ──────────────────────────────────────
+  const strategyAggregates: StrategyAggregate[] = [
+    buildStrategyAggregate('vectorRecall', 'vectorRecall', succeeded),
+    buildStrategyAggregate('graphEnrichedRecall', 'graphEnrichedRecall', succeeded),
+    buildStrategyAggregate('projectionMaxPerAxis', 'projectionMaxPerAxis', succeeded),
+    buildStrategyAggregate('projectionSumAcrossAxes', 'projectionSumAcrossAxes', succeeded),
+    buildStrategyAggregate('projectionIntersection', 'projectionIntersection', succeeded),
+  ];
 
   // ── Per-axis projection counts from DB ──────────────────────────────────
   const projCountResult = await pool.query<{ axis: string; count: string }>(
@@ -477,16 +627,8 @@ async function aggregateStats(
       }
     }
 
-    const hitCount = succeeded.filter(qr => {
-      const axisResult = qr.axisResults.find(ar => ar.axis === axis);
-      return axisResult !== undefined &&
-        axisResult.matches.some(m => m.similarity >= HIT_THRESHOLD);
-    }).length;
-
     const allSimilarities = allMatches.map(m => m.match.similarity);
-    const avgSimilarity = allSimilarities.length > 0
-      ? allSimilarities.reduce((s, v) => s + v, 0) / allSimilarities.length
-      : 0;
+    const avgSimilarity = meanOf(allSimilarities);
 
     const distribution = emptyBuckets();
     for (const sim of allSimilarities) {
@@ -506,9 +648,6 @@ async function aggregateStats(
       axis,
       totalProjectionsInDB: projCountByAxis.get(axis) ?? 0,
       avgSimilarity,
-      hitRate: succeeded.length > 0 ? hitCount / succeeded.length : 0,
-      hitCount,
-      totalQueries: succeeded.length,
       top3Matches: top3,
       similarityDistribution: distribution,
     });
@@ -531,7 +670,6 @@ async function aggregateStats(
         avgGraphEnrichedCount: 0,
         avgGraphAddedCount: 0,
         bestAxis: null,
-        hitRate: 0,
       });
       continue;
     }
@@ -542,11 +680,6 @@ async function aggregateStats(
       catResults.reduce((s, r) => s + r.graphEnrichedCount, 0) / catResults.length;
     const avgGraphAddedCount =
       catResults.reduce((s, r) => s + r.graphAddedCount, 0) / catResults.length;
-
-    const catHitCount = catResults.filter(qr =>
-      qr.axisResults.some(ar => ar.matches.some(m => m.similarity >= HIT_THRESHOLD)),
-    ).length;
-    const hitRate = catHitCount / catResults.length;
 
     // Best axis by avg similarity for this category
     let bestAxis: SemanticAxis | null = null;
@@ -561,7 +694,7 @@ async function aggregateStats(
         }
       }
       if (sims.length > 0) {
-        const avg = sims.reduce((s, v) => s + v, 0) / sims.length;
+        const avg = meanOf(sims);
         if (avg > bestAvgSim) {
           bestAvgSim = avg;
           bestAxis = axis;
@@ -577,41 +710,8 @@ async function aggregateStats(
       avgGraphEnrichedCount,
       avgGraphAddedCount,
       bestAxis,
-      hitRate,
     });
   }
-
-  // ── Overall stats ────────────────────────────────────────────────────────
-  const avgVectorRecallCount = succeeded.length > 0
-    ? succeeded.reduce((s, r) => s + r.vectorRecallCount, 0) / succeeded.length
-    : 0;
-
-  const allAxisMatches = succeeded.flatMap(qr => qr.axisResults.flatMap(ar => ar.matches));
-  const avgProjectionMatchCount = succeeded.length > 0
-    ? allAxisMatches.length / succeeded.length
-    : 0;
-
-  const avgGraphEnrichedCount = succeeded.length > 0
-    ? succeeded.reduce((s, r) => s + r.graphEnrichedCount, 0) / succeeded.length
-    : 0;
-
-  const avgGraphAddedCount = succeeded.length > 0
-    ? succeeded.reduce((s, r) => s + r.graphAddedCount, 0) / succeeded.length
-    : 0;
-
-  const vectorHitRate = succeeded.length > 0
-    ? succeeded.filter(r => r.vectorRecallCount > 0).length / succeeded.length
-    : 0;
-
-  const projectionHitRate = succeeded.length > 0
-    ? succeeded.filter(r =>
-        r.axisResults.some(ar => ar.matches.some(m => m.similarity >= HIT_THRESHOLD)),
-      ).length / succeeded.length
-    : 0;
-
-  const graphEnrichmentRate = succeeded.length > 0
-    ? succeeded.filter(r => r.graphAddedCount > 0).length / succeeded.length
-    : 0;
 
   return {
     metadata: {
@@ -623,18 +723,12 @@ async function aggregateStats(
       memstoreId: MEMSTORE_ID,
       contextId: CONTEXT_ID,
       projectionThreshold: PROJECTION_THRESHOLD,
-      hitThreshold: HIT_THRESHOLD,
       graphNeighbors: GRAPH_NEIGHBORS,
+      goldSetFile: GOLD_SET_FILE,
+      goldSetGeneratedAt: goldFile.generatedAt,
+      goldSetJudgeModel: goldFile.judgeModel,
     },
-    overall: {
-      avgVectorRecallCount,
-      avgProjectionMatchCount,
-      avgGraphEnrichedCount,
-      avgGraphAddedCount,
-      vectorHitRate,
-      projectionHitRate,
-      graphEnrichmentRate,
-    },
+    strategyAggregates,
     axisStats,
     categoryStats,
     questionResults,
@@ -651,27 +745,35 @@ function printSummary(results: BenchmarkOutput): void {
   console.log('╚══════════════════════════════════════════════════════════════════╝\n');
 
   const m = results.metadata;
-  const o = results.overall;
 
   console.log('── Configuration ─────────────────────────────────────────────────────');
   console.log(`  Test name:         ${m.testName}`);
-  console.log(`  Hit threshold:     ${m.hitThreshold}`);
   console.log(`  Graph neighbors:   ${m.graphNeighbors}`);
   console.log(`  Projection limit:  5 per axis (min threshold ${m.projectionThreshold})`);
+  console.log(`  Gold set:          ${m.goldSetFile}`);
+  console.log(`  Gold set model:    ${m.goldSetJudgeModel}`);
 
   console.log('\n── Overall ───────────────────────────────────────────────────────────');
   console.log(`  Questions total:        ${m.questionsTotal}`);
   console.log(`  Questions succeeded:    ${m.questionsSucceeded}`);
   console.log(`  Questions failed:       ${m.questionsFailed}`);
-  console.log(`  Avg vector recall:      ${o.avgVectorRecallCount.toFixed(1)} mems`);
-  console.log(`  Avg projection matches: ${o.avgProjectionMatchCount.toFixed(1)} (all axes combined)`);
-  console.log(`  Avg graph enriched:     ${o.avgGraphEnrichedCount.toFixed(1)} mems (+${o.avgGraphAddedCount.toFixed(1)} via edges)`);
-  console.log(`  Vector hit rate:        ${(o.vectorHitRate * 100).toFixed(1)}%`);
-  console.log(`  Projection hit rate:    ${(o.projectionHitRate * 100).toFixed(1)}% (any axis >= ${m.hitThreshold})`);
-  console.log(`  Graph enrichment rate:  ${(o.graphEnrichmentRate * 100).toFixed(1)}% (added >= 1 node via graph)`);
+
+  console.log('\n── Strategy Recall@K / Precision@K ──────────────────────────────────');
+  console.log('  Strategy                  R@5    R@10   P@5    P@10   Excl');
+  console.log('  ' + dash);
+  for (const agg of results.strategyAggregates) {
+    console.log(
+      `  ${agg.strategy.padEnd(25)}` +
+      ` ${(agg.meanRecallAt5 * 100).toFixed(1).padStart(5)}%` +
+      ` ${(agg.meanRecallAt10 * 100).toFixed(1).padStart(5)}%` +
+      ` ${(agg.meanPrecisionAt5 * 100).toFixed(1).padStart(5)}%` +
+      ` ${(agg.meanPrecisionAt10 * 100).toFixed(1).padStart(5)}%` +
+      ` ${String(agg.excludedQuestions).padStart(5)}`,
+    );
+  }
 
   console.log('\n── Per-Axis Statistics ───────────────────────────────────────────────');
-  console.log('  Axis          DBProj  HitRate  AvgSim  TopSim  Dist[0.3..0.8+]');
+  console.log('  Axis          DBProj  AvgSim  TopSim  Dist[0.3..0.8+]');
   console.log('  ' + dash);
   for (const stat of results.axisStats) {
     const topSim = stat.top3Matches[0]?.similarity ?? 0;
@@ -679,7 +781,6 @@ function printSummary(results: BenchmarkOutput): void {
     const distStr = `[${dist['0.3-0.4']},${dist['0.4-0.5']},${dist['0.5-0.6']},${dist['0.6-0.7']},${dist['0.7-0.8']},${dist['0.8+']}]`;
     console.log(
       `  ${stat.axis.padEnd(13)} ${String(stat.totalProjectionsInDB).padStart(6)}  ` +
-      `${(stat.hitRate * 100).toFixed(1).padStart(6)}%  ` +
       `${stat.avgSimilarity.toFixed(3)}  ` +
       `${topSim.toFixed(3)}  ` +
       `${distStr}`,
@@ -687,14 +788,13 @@ function printSummary(results: BenchmarkOutput): void {
   }
 
   console.log('\n── Per-Category Statistics ───────────────────────────────────────────');
-  console.log('  Category         N    VecRecall  Graph+  HitRate  BestAxis');
+  console.log('  Category         N    VecRecall  Graph+  BestAxis');
   console.log('  ' + dash);
   for (const cat of results.categoryStats) {
     console.log(
       `  ${cat.category.padEnd(16)} ${(cat.successCount + '/' + cat.questionCount).padStart(5)}  ` +
       `${cat.avgVectorRecallCount.toFixed(1).padStart(9)}  ` +
       `${cat.avgGraphAddedCount.toFixed(1).padStart(6)}  ` +
-      `${(cat.hitRate * 100).toFixed(1).padStart(6)}%  ` +
       `${cat.bestAxis ?? 'none'}`,
     );
   }
@@ -720,8 +820,12 @@ function printSummary(results: BenchmarkOutput): void {
 async function main(): Promise<void> {
   console.log('=== Benchmark Recall ===');
   console.log(`Test name: ${TEST_NAME}`);
-  console.log(`Hit threshold: ${HIT_THRESHOLD}`);
   console.log(`Graph neighbors: ${GRAPH_NEIGHBORS}`);
+  console.log('');
+
+  // Load frozen gold set — fail fast if missing (checked at startup above)
+  const goldFile = JSON.parse(readFileSync(GOLD_SET_FILE, 'utf-8')) as GoldSetFile;
+  console.log(`Gold set: ${Object.keys(goldFile.questions).length} questions, judge=${goldFile.judgeModel}, generated=${goldFile.generatedAt}`);
   console.log('');
 
   const pool = new Pool({ connectionString: POSTGRES_URL });
@@ -787,11 +891,12 @@ async function main(): Promise<void> {
     openai,
     projectionExtractor,
     allQuestions,
+    goldFile.questions,
   );
 
   // Aggregate stats
   console.log('\nAggregating statistics...');
-  const output = await aggregateStats(pool, questionResults, allQuestions);
+  const output = await aggregateStats(pool, questionResults, allQuestions, goldFile);
 
   // Save results
   mkdirSync('/home/alexmak/llmems/main/sandboxes', { recursive: true });
