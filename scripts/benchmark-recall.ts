@@ -857,10 +857,10 @@ async function main(): Promise<void> {
   const memStore = new PostgresMemStore(POSTGRES_URL);
   const graphStore = new GraphStore(pool);
   const graphRecall = new GraphRecall(graphStore);
-  // Query embeddings use the same OpenRouter provider + model as mem_projection embeddings
-  // (re-extract-projections.ts) so both vectors live in the same space.
+  // geminiApiKey: undefined → createGeminiClient falls back to OpenRouter (same as re-extract-projections.ts).
+  // openaiApiKey/BaseUrl/Model: OpenRouter path for embeddings — identical to GraphEmbeddingService in re-extract.
   const projectionExtractor = new ProjectionExtractor({
-    geminiApiKey: OPENROUTER_API_KEY,
+    geminiApiKey: undefined,
     geminiModel: 'google/gemini-2.5-flash',
     openaiApiKey: OPENROUTER_API_KEY,
     openaiBaseUrl: 'https://openrouter.ai/api/v1',
