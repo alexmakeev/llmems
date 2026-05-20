@@ -22,19 +22,32 @@ import pgvector from 'pgvector/pg';
 import { PostgresMemStore } from '../src/services/postgres-mem-store.js';
 import { GraphStore } from '../src/services/graph/graph-store.js';
 import { GraphRecall } from '../src/services/graph/graph-recall.js';
+import { ProjectionExtractor } from '../src/services/graph/projection-extractor.js';
 import { SEMANTIC_AXES } from '../src/services/graph/types.js';
 import type { SemanticAxis } from '../src/services/graph/types.js';
 import type { RecallResult } from '../src/types.js';
 import { requireEnvInt } from '../src/shared/env.js';
+import {
+  aggregateMaxPerAxis,
+  aggregateSumAcrossAxes,
+  aggregateIntersection,
+} from '../src/services/graph/benchmark-aggregation.js';
+import type { AggregatedEntry, PerAxisResults } from '../src/services/graph/benchmark-aggregation.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 const POSTGRES_URL = process.env['POSTGRES_URL'] ??
   'postgresql://llmems:pEDqwhPpyd3KYiy1rg5O0d8nGwTZxUvJ@localhost:5434/llmems_axis_projections';
 const OPENROUTER_API_KEY = process.env['OPENROUTER_API_KEY'] ?? '';
+const OPENAI_API_KEY = process.env['OPENAI_API_KEY'] ?? '';
 
 if (!OPENROUTER_API_KEY) {
   console.error('ERROR: OPENROUTER_API_KEY is required');
+  process.exit(1);
+}
+
+if (!OPENAI_API_KEY) {
+  console.error('ERROR: OPENAI_API_KEY is required (used for query projection embeddings)');
   process.exit(1);
 }
 
@@ -88,6 +101,10 @@ interface QuestionResult {
   axisResults: QuestionAxisResult[];
   graphEnrichedCount: number;
   graphAddedCount: number;
+  /** Per-axis true projection recall: each axis searched with its own query-axis embedding. */
+  projectionMaxPerAxis: AggregatedEntry[];
+  projectionSumAcrossAxes: AggregatedEntry[];
+  projectionIntersection: AggregatedEntry[];
   error?: string;
 }
 
@@ -240,6 +257,47 @@ async function runAxisRecall(
   }
 }
 
+/**
+ * Run per-axis projection recall for a query using true per-axis query projections.
+ *
+ * 1. Decomposes the query into per-axis projections (each with its own embedding).
+ * 2. For each axis present in the query projections, runs a pgvector cosine search
+ *    against mem_projections using THAT axis's query embedding.
+ * 3. Returns a PerAxisResults map (axis → ranked AxisRecallEntry list).
+ *
+ * If queryToProjections fails, returns an empty map (not a hard error — benchmark continues).
+ */
+async function runTrueProjectionRecall(
+  pool: Pool,
+  projectionExtractor: ProjectionExtractor,
+  query: string,
+): Promise<PerAxisResults> {
+  const queryProjResult = await projectionExtractor.queryToProjections(query);
+  if (!queryProjResult.ok) {
+    console.warn(`  queryToProjections failed: ${queryProjResult.error.message}`);
+    return new Map();
+  }
+
+  const perAxisResults: PerAxisResults = new Map();
+
+  for (const queryProj of queryProjResult.value) {
+    if (queryProj.embedding === undefined) continue;
+
+    const matches = await runAxisRecall(pool, queryProj.embedding, queryProj.axis);
+    // Convert AxisMatch to AxisRecallEntry (drop summary/projectionText — not needed for aggregation)
+    perAxisResults.set(queryProj.axis, matches.map(m => ({
+      memId: m.memId,
+      similarity: m.similarity,
+    })));
+  }
+
+  return perAxisResults;
+}
+
+// ── Top-K constant for aggregated projection results ──────────────────────────
+
+const PROJECTION_AGGREGATION_TOP_K = GRAPH_NEIGHBORS;
+
 // ── Main benchmark loop ────────────────────────────────────────────────────────
 
 async function runBenchmark(
@@ -247,6 +305,7 @@ async function runBenchmark(
   memStore: PostgresMemStore,
   graphRecall: GraphRecall,
   openai: OpenAI,
+  projectionExtractor: ProjectionExtractor,
   questions: TestQuestion[],
 ): Promise<QuestionResult[]> {
   const results: QuestionResult[] = [];
@@ -279,6 +338,9 @@ async function runBenchmark(
           axisResults: [],
           graphEnrichedCount: 0,
           graphAddedCount: 0,
+          projectionMaxPerAxis: [],
+          projectionSumAcrossAxes: [],
+          projectionIntersection: [],
           error: 'empty embedding response',
         });
         continue;
@@ -297,6 +359,9 @@ async function runBenchmark(
         axisResults: [],
         graphEnrichedCount: 0,
         graphAddedCount: 0,
+        projectionMaxPerAxis: [],
+        projectionSumAcrossAxes: [],
+        projectionIntersection: [],
         error: message,
       });
       if (i + 1 < questions.length) await sleep(API_DELAY_MS);
@@ -340,7 +405,24 @@ async function runBenchmark(
 
     const totalAxisMatches = axisResults.reduce((sum, ar) => sum + ar.matches.length, 0);
     const totalAxisHits = axisResults.reduce((sum, ar) => sum + ar.hitCount, 0);
-    console.log(`  vec:${vectorNodes.length} graph+:${graphAddedCount} axisMatches:${totalAxisMatches} axisHits:${totalAxisHits}`);
+
+    // ── True per-axis projection recall + 3 aggregation strategies ─────────────
+    const perAxisResults = await runTrueProjectionRecall(
+      pool,
+      projectionExtractor,
+      question.question,
+    );
+
+    const projectionMaxPerAxis = aggregateMaxPerAxis(perAxisResults).slice(0, PROJECTION_AGGREGATION_TOP_K);
+    const projectionSumAcrossAxes = aggregateSumAcrossAxes(perAxisResults).slice(0, PROJECTION_AGGREGATION_TOP_K);
+    const projectionIntersection = aggregateIntersection(perAxisResults).slice(0, PROJECTION_AGGREGATION_TOP_K);
+
+    console.log(
+      `  vec:${vectorNodes.length} graph+:${graphAddedCount}` +
+      ` axisMatches:${totalAxisMatches} axisHits:${totalAxisHits}` +
+      ` projAxes:${perAxisResults.size}` +
+      ` projTop:${projectionMaxPerAxis.length}/${projectionSumAcrossAxes.length}/${projectionIntersection.length}`,
+    );
 
     results.push({
       questionId: question.id,
@@ -352,6 +434,9 @@ async function runBenchmark(
       axisResults,
       graphEnrichedCount,
       graphAddedCount,
+      projectionMaxPerAxis,
+      projectionSumAcrossAxes,
+      projectionIntersection,
     });
   }
 
@@ -674,6 +759,11 @@ async function main(): Promise<void> {
   const memStore = new PostgresMemStore(POSTGRES_URL);
   const graphStore = new GraphStore(pool);
   const graphRecall = new GraphRecall(graphStore);
+  const projectionExtractor = new ProjectionExtractor({
+    geminiApiKey: OPENROUTER_API_KEY,
+    geminiModel: 'google/gemini-2.5-flash',
+    openaiApiKey: OPENAI_API_KEY,
+  });
 
   // Load all 100 questions
   const questionsContent = readFileSync(QUESTIONS_FILE, 'utf-8');
@@ -695,6 +785,7 @@ async function main(): Promise<void> {
     memStore,
     graphRecall,
     openai,
+    projectionExtractor,
     allQuestions,
   );
 
