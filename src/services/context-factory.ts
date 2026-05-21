@@ -287,13 +287,12 @@ export class ContextFactory {
       // We do not silently skip: a bad focus vector leads to wrong mem retrieval.
       throw new Error(`Embedding failed: ${embedResult.error.message}`);
     }
-    // DIMENSION CONTRACT: IEmbeddingService.embed().compact MUST match
-    // mem.embeddings.compact in dimension (production: both are 1024-dim despite
-    // the field name "compact"). The name "compact" is a historical artefact from
-    // an earlier multi-resolution embedding design. Do NOT use a smaller embedding
-    // here — the focus vector is used for cosine-sim against mem.embeddings.compact
-    // in softRebuild(), so dimension mismatch would silently corrupt similarity scores.
-    // Cleanup (rename to align field name with actual dim) is deferred to a separate bead.
+    // DIMENSION CONTRACT: IEmbeddingService.embed().compact is 1024-dim in production
+    // (the field name "compact" is a historical artefact from an earlier multi-resolution
+    // embedding design). This 1024-dim vector becomes session.focus and is compared
+    // in softRebuild() against mem.embeddings.full (also 1024-dim, from mems.embedding
+    // DB column). Do NOT substitute a smaller embedding here — dimension must match.
+    // Rename cleanup is deferred to bead llmems-fqx.
     session.focus = shiftFocus(session.focus, embedResult.value.compact, this.config.alpha);
 
     // 3. Search for relevant mems using the updated focus
@@ -338,12 +337,13 @@ export class ContextFactory {
    *
    * Called when oooCounter reaches config.rebuildThreshold. Steps:
    *   1. Score all loaded mems by cosine similarity to current focus
-   *      (using mem.embeddings.compact — same dimension as the focus vector
-   *      produced by IEmbeddingService.embed().compact).
-   *      DIMENSION NOTE: IEmbeddingService.embed().compact MUST match
-   *      mem.embeddings.compact in dimension (production: both are 1024-dim
-   *      despite the field name "compact"). This is a naming artefact; a
-   *      cleanup to rename the field is deferred to a separate bead.
+   *      (using mem.embeddings.full — 1024-dim, same as session.focus).
+   *      DIMENSION CONTRACT: session.focus is seeded from
+   *      IEmbeddingService.embed().compact which is 1024-dim in production
+   *      (the field name "compact" is a historical artefact).
+   *      mem.embeddings.full maps from the DB column mems.embedding (also 1024-dim),
+   *      which is the same column searchMemsByVector queries on.
+   *      mem.embeddings.compact (256-dim, truncated) must NOT be used here.
    *   2. Keep the top ceil(loaded.length * config.keepRatio) mems by score;
    *      drop the rest (stale / lowest relevance to current focus).
    *   3. Sort survivors chronologically by closedAt ascending.
@@ -363,13 +363,20 @@ export class ContextFactory {
   private softRebuild(session: SessionWorkingState): void {
     const keepCount = Math.max(1, Math.ceil(session.loaded.length * this.config.keepRatio));
 
-    // Score each mem by cosine similarity to current focus
-    // For mems with no embedding data (empty array), score is 0 (treated as stale)
+    // Score each mem by cosine similarity to current focus.
+    // DIMENSION CONTRACT: session.focus is seeded from IEmbeddingService.embed().compact
+    // which in production is 1024-dim (despite the field name "compact" — naming artefact).
+    // mems.embedding (DB column) is also 1024-dim and maps to mem.embeddings.full.
+    // searchMemsByVector queries on mems.embedding (1024-dim), so focus and full are
+    // always the same dimension. We compare against mem.embeddings.full to maintain
+    // this consistency. mem.embeddings.compact (256-dim, truncated) must NOT be used
+    // here — it would be a dimension mismatch against the 1024-dim focus vector.
+    // For mems with no embedding data (empty array), score is 0 (treated as stale).
     const scored = session.loaded.map(mem => ({
       mem,
       score: cosineSimilarity(
         session.focus,
-        normalize(mem.embeddings.compact),
+        normalize(mem.embeddings.full),
       ),
     }));
 

@@ -630,8 +630,9 @@ describe('ContextFactory', () => {
   describe('soft-rebuild (Step 8)', () => {
     /**
      * Build a Mem with embeddings set for cosine-sim tests.
-     * We set compact (used in remember) but also need embeddings.compact for rebuild scoring.
-     * Rebuild uses embeddings.compact for similarity to focus.
+     * softRebuild scores against mem.embeddings.full (1024-dim in production,
+     * same dimension as session.focus). Tests use small equal-dim vectors.
+     * embedding is placed in `full`; compact and micro are left empty.
      */
     function makeMemWithEmbedding(
       id: string,
@@ -643,7 +644,7 @@ describe('ContextFactory', () => {
         id,
         summary,
         chunkIds: [],
-        embeddings: { full: [], compact: embedding, micro: [] },
+        embeddings: { full: embedding, compact: [], micro: [] },
         closedAt,
       };
     }
@@ -832,6 +833,64 @@ describe('ContextFactory', () => {
       expect(state.loadedMemIds).toEqual(loadedIds);
       // dropped mem must not be in loadedMemIds
       expect(state.loadedMemIds.has('m-drop')).toBe(false);
+    });
+
+    it('scores against embeddings.full (1024-dim) not embeddings.compact (256-dim) — dim guard', async () => {
+      // This test would fail if softRebuild used mem.embeddings.compact instead of .full.
+      // focus is 3-dim (simulating 1024 in production).
+      // The "relevant" mem has full=[1,0,0] (matches focus) and compact=[0,1,0] (orthogonal to focus).
+      // The "stale" mem has full=[0,1,0] (orthogonal) and compact=[1,0,0] (matches focus).
+      // If softRebuild scored on compact, it would keep the stale mem and drop the relevant one.
+      // If softRebuild scored on full (correct), it keeps the relevant and drops the stale.
+      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1, keepRatio: 0.5 });
+      const state = f.getOrCreateSession('s-dim-guard');
+
+      // focus = [1, 0, 0]
+      state.focus = [1, 0, 0];
+
+      // "relevant" mem: full=[1,0,0] (aligns with focus), compact=[0,1,0] (orthogonal — would be wrongly dropped)
+      const relevantMem: Mem = {
+        id: 'm-relevant',
+        summary: 'Relevant mem',
+        chunkIds: [],
+        embeddings: { full: [1, 0, 0], compact: [0, 1, 0], micro: [] },
+        closedAt: new Date('2024-01-01T00:00:00.000Z'),
+      };
+
+      // "stale" mem: full=[0,1,0] (orthogonal — should be dropped), compact=[1,0,0] (aligns with focus — would be wrongly kept)
+      const staleMem: Mem = {
+        id: 'm-stale',
+        summary: 'Stale mem',
+        chunkIds: [],
+        embeddings: { full: [0, 1, 0], compact: [1, 0, 0], micro: [] },
+        closedAt: new Date('2024-01-02T00:00:00.000Z'),
+      };
+
+      state.loaded.push(relevantMem);
+      state.loaded.push(staleMem);
+      state.loadedMemIds.add('m-relevant');
+      state.loadedMemIds.add('m-stale');
+      state.oooCounter = 0;
+
+      // Trigger rebuild with keepRatio=0.5 (keeps ceil(2*0.5)=1 mem)
+      const trigger: Mem = {
+        id: 'm-trigger',
+        summary: 'Trigger',
+        chunkIds: [],
+        embeddings: { full: [1, 0, 0], compact: [1, 0, 0], micro: [] },
+        closedAt: new Date('2024-01-03T00:00:00.000Z'),
+      };
+      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([trigger]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      await f.remember('s-dim-guard', 'fragment', 'ctx1');
+
+      // If scored on full (correct): m-relevant kept (score=1), m-stale dropped (score=0)
+      // If scored on compact (wrong): m-stale kept (score=1), m-relevant dropped (score=0)
+      // keepRatio=0.5 keeps only 1 of the original 2 (trigger is the third, added after scoring)
+      // After rebuild the loaded list is re-sorted chronologically — m-relevant must be present
+      const ids = state.loaded.map(m => m.id);
+      expect(ids).toContain('m-relevant');
+      expect(ids).not.toContain('m-stale');
     });
   });
 });
