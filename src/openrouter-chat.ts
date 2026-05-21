@@ -70,7 +70,7 @@ export interface IPrecontextLoader {
 export type { IEmbeddingService, EmbeddingValue } from './types.js';
 import { MemManager, InMemoryMemStore } from './services/mem-manager.js';
 import { BackgroundIndexer } from './services/background-indexer.js';
-import type { ILLMSummarizer } from './services/background-indexer.js';
+import { LLMSummarizer } from './services/llm-summarizer.js';
 import { createMemoryLogger } from './logging.js';
 
 // ============================================================
@@ -213,19 +213,6 @@ interface ResponseFormat {
 //   general_summary: z.string(),
 // });
 
-/** Zod schema for background summarization LLM result */
-const BackgroundSummarizationSchema = z.object({
-  topics: z.array(z.object({
-    summary: z.string(),
-    chunkIds: z.array(z.string()),
-    vocabulary: z.array(z.object({
-      term: z.string(),
-      count: z.number(),
-    })).default([]),
-  })),
-  tailChunkIds: z.array(z.string()),
-});
-
 /** Embedding set for a closed topic */
 type TopicEmbeddings = {
   full: number[];    // 1536 dims
@@ -236,47 +223,6 @@ type BackgroundResult = {
   topics: { summary: string; chunkIds: string[]; embeddings: TopicEmbeddings; vocabulary: { term: string; count: number }[] }[];
   tailChunkIds: string[];
   newGeneralSummary: string | null;
-};
-
-/** JSON schema for background summarization response */
-const BACKGROUND_SUMMARIZATION_FORMAT: ResponseFormat = {
-  type: 'json_schema',
-  json_schema: {
-    name: 'background_summarization',
-    strict: true,
-    schema: {
-      type: 'object',
-      properties: {
-        topics: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              summary: { type: 'string' },
-              chunkIds: { type: 'array', items: { type: 'string' } },
-              vocabulary: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    term: { type: 'string' },
-                    count: { type: 'integer' },
-                  },
-                  required: ['term', 'count'],
-                  additionalProperties: false,
-                },
-              },
-            },
-            required: ['summary', 'chunkIds', 'vocabulary'],
-            additionalProperties: false,
-          },
-        },
-        tailChunkIds: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['topics', 'tailChunkIds'],
-      additionalProperties: false,
-    },
-  },
 };
 
 /** System prompt for the chat assistant (plain text, no topic detection) */
@@ -350,12 +296,13 @@ export class OpenRouterChat {
     if (options.sessionConsolidator !== undefined) this.sessionConsolidator = options.sessionConsolidator;
     if (options.precontextLoader !== undefined) this.precontextLoader = options.precontextLoader;
 
-    // Wire BackgroundIndexer with an ILLMSummarizer that delegates to callOpenRouter.
-    // Arrow function captures `this` after full construction.
-    const llmSummarizer: ILLMSummarizer = {
-      summarize: (systemPrompt, detectionPrompt) =>
-        this.callOpenRouterForSummarizer(systemPrompt, detectionPrompt),
-    };
+    // Wire BackgroundIndexer with the standalone LLMSummarizer (OpenAI-compatible).
+    // Delegates summarization HTTP to LLMSummarizer; chat HTTP stays in callOpenRouter.
+    const llmSummarizer = new LLMSummarizer({
+      baseURL: OPENROUTER_API_URL.replace('/chat/completions', ''),
+      model: this.model,
+      apiKey: this.apiKey,
+    });
     this.backgroundIndexer = new BackgroundIndexer(this.memManager, this.embeddingService, llmSummarizer);
   }
 
@@ -820,45 +767,6 @@ export class OpenRouterChat {
     }, this.backgroundDebounceMs);
   }
 
-  /**
-   * ILLMSummarizer implementation: call OpenRouter with the background summarization
-   * schema and parse the result.
-   *
-   * This is the bridge between BackgroundIndexer (which calls ILLMSummarizer.summarize)
-   * and callOpenRouter (the private low-level HTTP method).
-   *
-   * Returns parsed {topics, tailChunkIds} or null on LLM/parse failure.
-   */
-  private async callOpenRouterForSummarizer(
-    systemPrompt: string,
-    detectionPrompt: string,
-  ): Promise<{
-    topics: Array<{ summary: string; chunkIds: string[]; vocabulary: Array<{ term: string; count: number }> }>;
-    tailChunkIds: string[];
-  } | null> {
-    const detectionResult = await this.callOpenRouter(
-      systemPrompt,
-      [{ role: 'user', content: detectionPrompt }],
-      BACKGROUND_SUMMARIZATION_FORMAT,
-      0, // temperature=0 for deterministic topic detection
-    );
-
-    if (!detectionResult.ok) {
-      this.log.warn({ error: detectionResult.error }, 'callOpenRouterForSummarizer: LLM call failed');
-      return null;
-    }
-
-    const parsedJson = safeJsonParse(detectionResult.value);
-    const parsed = BackgroundSummarizationSchema.safeParse(parsedJson);
-
-    if (!parsed.success) {
-      this.log.warn({ raw: detectionResult.value }, 'callOpenRouterForSummarizer: failed to parse response');
-      return null;
-    }
-
-    return { topics: parsed.data.topics, tailChunkIds: parsed.data.tailChunkIds };
-  }
-
   // ---- Tool calling methods ----
 
   /**
@@ -1304,17 +1212,6 @@ export class OpenRouterChat {
 // ============================================================
 // Module-level helpers
 // ============================================================
-
-/**
- * Safely parse a JSON string, returning undefined on failure.
- */
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Parse role prefix from chunk content.

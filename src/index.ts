@@ -31,6 +31,18 @@ export type {
 } from './services/context-factory.js';
 
 // ============================================================
+// BackgroundIndexer + ILLMSummarizer port (needed by ContextFactory consumers)
+// ============================================================
+export { BackgroundIndexer } from './services/background-indexer.js';
+export type { ILLMSummarizer } from './services/background-indexer.js';
+
+// ============================================================
+// LLMSummarizer — standalone concrete OpenAI-compatible summarizer
+// ============================================================
+export { LLMSummarizer } from './services/llm-summarizer.js';
+export type { LLMSummarizerConfig } from './services/llm-summarizer.js';
+
+// ============================================================
 // OpenRouterChat (chat wrapper with memory + LLM inference)
 // ============================================================
 export { OpenRouterChat } from './openrouter-chat.js';
