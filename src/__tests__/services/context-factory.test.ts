@@ -109,7 +109,7 @@ describe('ContextFactory', () => {
     it('creates session state on first access', () => {
       const state = factory.getOrCreateSession('session-1');
       expect(state).toBeDefined();
-      expect(state.focus).toBeDefined();
+      // focus field removed in S2.6 (EMA eliminated); check remaining fields
       expect(state.loaded).toBeDefined();
       expect(state.loadedMemIds).toBeInstanceOf(Set);
       expect(state.cachePoint).toBe(0);
@@ -121,11 +121,6 @@ describe('ContextFactory', () => {
       const state1 = factory.getOrCreateSession('session-abc');
       const state2 = factory.getOrCreateSession('session-abc');
       expect(state1).toBe(state2); // referential equality
-    });
-
-    it('starts with empty focus vector', () => {
-      const state = factory.getOrCreateSession('session-new');
-      expect(state.focus).toHaveLength(0);
     });
 
     it('starts with empty loaded mems list', () => {
@@ -158,13 +153,13 @@ describe('ContextFactory', () => {
       const stateA = factory.getOrCreateSession('session-X');
       const stateB = factory.getOrCreateSession('session-Y');
 
-      // Mutate stateA directly
+      // Mutate stateA directly (focus removed in S2.6; use oooCounter + cachePoint)
       stateA.oooCounter = 5;
-      stateA.focus.push(0.1, 0.2);
+      stateA.cachePoint = 3;
 
       // stateB must be unaffected
       expect(stateB.oooCounter).toBe(0);
-      expect(stateB.focus).toHaveLength(0);
+      expect(stateB.cachePoint).toBe(0);
     });
 
     it('maintains correct state for each session independently', () => {
@@ -211,79 +206,34 @@ describe('ContextFactory', () => {
     });
   });
 
-  // ── remember — focus shift ─────────────────────────────────────────────────
+  // ── remember — embedding (S2.6: EMA removed, currentVec per-turn) ───────────
 
-  describe('remember — focus shift (EMA)', () => {
-    it('sets focus to embedding value on first fragment', async () => {
-      // embed mock returns compact: [0.1, 0.2, 0.3]
-      await factory.remember('s1', 'fragment', 'ctx1');
-      const state = factory.getOrCreateSession('s1');
-      // First fragment: focus = normalize(embed) ≈ norm([0.1, 0.2, 0.3])
-      const norm = Math.sqrt(0.1 * 0.1 + 0.2 * 0.2 + 0.3 * 0.3);
-      expect(state.focus[0]).toBeCloseTo(0.1 / norm, 5);
-      expect(state.focus[1]).toBeCloseTo(0.2 / norm, 5);
-      expect(state.focus[2]).toBeCloseTo(0.3 / norm, 5);
-    });
+  describe('remember — embedding', () => {
+    // EMA focus shift removed in S2.6 — currentVec is a fresh normalize(embed) per turn.
+    // The per-turn recall tests are in the S2.6 describe block below.
 
     it('calls embed with the fragment text', async () => {
       const embedSpy = vi.spyOn(embeddingService, 'embed');
       await factory.remember('s1', 'test-text', 'ctx1');
       expect(embedSpy).toHaveBeenCalledWith('test-text');
     });
-
-    it('applies EMA on second fragment: focus = normalize(focus*(1-alpha) + emb*alpha)', async () => {
-      // alpha default = 0.5
-      // embed always returns [0.1, 0.2, 0.3]
-      await factory.remember('s1', 'first', 'ctx1');
-      const state = factory.getOrCreateSession('s1');
-      const focusAfterFirst = [...state.focus];
-
-      await factory.remember('s1', 'second', 'ctx1');
-      const embRaw = [0.1, 0.2, 0.3];
-      const embNorm = Math.sqrt(embRaw.reduce((s, v) => s + v * v, 0));
-      const embNormalized = embRaw.map(v => v / embNorm);
-
-      const alpha = 0.5;
-      const raw = focusAfterFirst.map((f, i) => f * (1 - alpha) + embNormalized[i]! * alpha);
-      const rawNorm = Math.sqrt(raw.reduce((s, v) => s + v * v, 0));
-      const expected = raw.map(v => v / rawNorm);
-
-      for (let i = 0; i < expected.length; i++) {
-        expect(state.focus[i]).toBeCloseTo(expected[i]!, 5);
-      }
-    });
-
-    it('uses configurable alpha for EMA', async () => {
-      const customFactory = new ContextFactory(store, embeddingService, indexer, { alpha: 0.8 });
-      // First fragment: focus = normalize(emb)
-      await customFactory.remember('s1', 'first', 'ctx1');
-      const state = customFactory.getOrCreateSession('s1');
-      const focusAfterFirst = [...state.focus];
-
-      await customFactory.remember('s1', 'second', 'ctx1');
-      const embRaw = [0.1, 0.2, 0.3];
-      const embNorm = Math.sqrt(embRaw.reduce((s, v) => s + v * v, 0));
-      const embNormalized = embRaw.map(v => v / embNorm);
-
-      const alpha = 0.8;
-      const raw = focusAfterFirst.map((f, i) => f * (1 - alpha) + embNormalized[i]! * alpha);
-      const rawNorm = Math.sqrt(raw.reduce((s, v) => s + v * v, 0));
-      const expected = raw.map(v => v / rawNorm);
-
-      for (let i = 0; i < expected.length; i++) {
-        expect(state.focus[i]).toBeCloseTo(expected[i]!, 5);
-      }
-    });
   });
 
   // ── remember — mem loading ────────────────────────────────────────────────
 
   describe('remember — mem loading from store', () => {
-    it('calls searchMemsByVector with current focus and contextId', async () => {
+    it('calls searchMemsByVector with currentVec = normalize(embedding) and contextId', async () => {
       const searchSpy = vi.spyOn(store, 'searchMemsByVector');
       await factory.remember('s1', 'fragment', 'ctx1');
-      const state = factory.getOrCreateSession('s1');
-      expect(searchSpy).toHaveBeenCalledWith(state.focus, expect.any(Number), 'ctx1');
+      // currentVec = normalize([0.1, 0.2, 0.3]) — from mock embed
+      const raw = [0.1, 0.2, 0.3];
+      const norm = Math.sqrt(raw.reduce((s, v) => s + v * v, 0));
+      const expectedVec = raw.map(v => v / norm);
+      expect(searchSpy).toHaveBeenCalledWith(
+        expect.arrayContaining(expectedVec.map(v => expect.closeTo(v, 5))),
+        expect.any(Number),
+        'ctx1',
+      );
     });
 
     it('adds search results to session.loaded and loadedMemIds', async () => {
@@ -300,7 +250,9 @@ describe('ContextFactory', () => {
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
       expect(state.loaded).toHaveLength(1);
-      expect(state.loaded[0]).toBe(mem);
+      // loaded item is a LoadedMem (spread + provenance), not the exact same reference
+      expect(state.loaded[0]!.id).toBe('mem-1');
+      expect(state.loaded[0]!.summary).toBe('Test summary');
       expect(state.loadedMemIds.has('mem-1')).toBe(true);
     });
 
@@ -681,23 +633,34 @@ describe('ContextFactory', () => {
 
   describe('soft-rebuild (Step 8)', () => {
     /**
-     * Build a Mem with embeddings set for cosine-sim tests.
+     * Build a LoadedMem with embeddings set for cosine-sim tests.
      * softRebuild scores against mem.embeddings.full (1536-dim in production,
-     * same dimension as session.focus). Tests use small equal-dim vectors.
+     * same dimension as currentVec from embed). Tests use small equal-dim vectors.
+     *
+     * S2.6: session.loaded is LoadedMem[] — must include provenance field.
+     * softRebuild uses currentVec (from embed result), not session.focus (removed).
+     * Tests that depend on scoring direction must mock embed to return [1, 0, 0].
      */
-    function makeMemWithEmbedding(
+    function makeLoadedMem(
       id: string,
       summary: string,
       closedAt: Date,
       embedding: number[],
-    ): Mem {
+      provenance: 'current' | 'backbone' = 'current',
+    ): import('../../services/context-factory.js').LoadedMem {
       return {
         id,
         summary,
         chunkIds: [],
         embeddings: { full: embedding },
         closedAt,
+        provenance,
       };
+    }
+
+    /** Convenience: Mem for mock return values from searchMemsByVector */
+    function makeSearchMem(id: string, summary: string, closedAt: Date, embedding: number[]): Mem {
+      return { id, summary, chunkIds: [], embeddings: { full: embedding }, closedAt };
     }
 
     it('does NOT trigger rebuild when oooCounter is below rebuildThreshold', async () => {
@@ -705,8 +668,8 @@ describe('ContextFactory', () => {
       const state = f.getOrCreateSession('s-no-rebuild');
 
       // Manually load 2 mems and set counter below threshold
-      state.loaded.push(makeMemWithEmbedding('m1', 's1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m2', 's2', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m1', 's1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m2', 's2', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]));
       state.loadedMemIds.add('m1');
       state.loadedMemIds.add('m2');
       state.oooCounter = 4; // below threshold of 5
@@ -725,16 +688,14 @@ describe('ContextFactory', () => {
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 3 });
       const state = f.getOrCreateSession('s-trigger-rebuild');
 
-      // focus: unit vector [1, 0, 0]
-      state.focus = [1, 0, 0];
+      // S2.6: embed returns [1, 0, 0] → currentVec = [1, 0, 0] for softRebuild scoring
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
 
-      // Load 3 mems: m1 and m2 are relevant (cos-sim high), m3 is stale (orthogonal)
-      // With keepRatio=0.7, keep ceil(3*0.7)=3... need more mems to drop one
-      // Use 4 mems: 3 relevant, 1 stale; keepRatio keeps ceil(4*0.7)=3
-      state.loaded.push(makeMemWithEmbedding('m1', 'Relevant 1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m2', 'Relevant 2', new Date('2024-01-03T00:00:00.000Z'), [0.9, 0.1, 0]));
-      state.loaded.push(makeMemWithEmbedding('m3', 'Relevant 3', new Date('2024-01-02T00:00:00.000Z'), [0.95, 0.05, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-stale', 'Stale mem', new Date('2024-01-04T00:00:00.000Z'), [0, 1, 0]));
+      // Use 4 mems: 3 relevant to [1,0,0], 1 stale; keepRatio keeps ceil(4*0.7)=3
+      state.loaded.push(makeLoadedMem('m1', 'Relevant 1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m2', 'Relevant 2', new Date('2024-01-03T00:00:00.000Z'), [0.9, 0.1, 0]));
+      state.loaded.push(makeLoadedMem('m3', 'Relevant 3', new Date('2024-01-02T00:00:00.000Z'), [0.95, 0.05, 0]));
+      state.loaded.push(makeLoadedMem('m-stale', 'Stale mem', new Date('2024-01-04T00:00:00.000Z'), [0, 1, 0]));
       state.loadedMemIds.add('m1');
       state.loadedMemIds.add('m2');
       state.loadedMemIds.add('m3');
@@ -742,7 +703,7 @@ describe('ContextFactory', () => {
       state.oooCounter = 2; // one more will push to 3
 
       // remember() returns 1 new mem to push oooCounter to 3
-      const newMem = makeMemWithEmbedding('m-new', 'New mem', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
+      const newMem = makeSearchMem('m-new', 'New mem', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([newMem]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-trigger-rebuild', 'fragment', 'ctx1');
@@ -755,15 +716,14 @@ describe('ContextFactory', () => {
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-stale-dropped');
 
-      // focus: unit vector [1, 0, 0]
-      state.focus = [1, 0, 0];
+      // S2.6: embed returns [1, 0, 0] → currentVec = [1, 0, 0] for softRebuild scoring
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
 
-      // 3 mems: 2 relevant to focus, 1 orthogonal (stale)
-      // keepRatio 0.7 => keep ceil(3*0.7)=3 from 3... need 4 to drop 1
-      state.loaded.push(makeMemWithEmbedding('m-keep1', 'Keep 1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-keep2', 'Keep 2', new Date('2024-01-02T00:00:00.000Z'), [0.99, 0.01, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-keep3', 'Keep 3', new Date('2024-01-03T00:00:00.000Z'), [0.98, 0.02, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-drop', 'Drop me', new Date('2024-01-04T00:00:00.000Z'), [0, 1, 0]));
+      // 4 mems: 3 relevant to [1,0,0], 1 orthogonal (stale); keepRatio 0.7 drops the stale one
+      state.loaded.push(makeLoadedMem('m-keep1', 'Keep 1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m-keep2', 'Keep 2', new Date('2024-01-02T00:00:00.000Z'), [0.99, 0.01, 0]));
+      state.loaded.push(makeLoadedMem('m-keep3', 'Keep 3', new Date('2024-01-03T00:00:00.000Z'), [0.98, 0.02, 0]));
+      state.loaded.push(makeLoadedMem('m-drop', 'Drop me', new Date('2024-01-04T00:00:00.000Z'), [0, 1, 0]));
       state.loadedMemIds.add('m-keep1');
       state.loadedMemIds.add('m-keep2');
       state.loadedMemIds.add('m-keep3');
@@ -771,12 +731,12 @@ describe('ContextFactory', () => {
       state.oooCounter = 0;
 
       // remember() returns 1 new mem pushing oooCounter to 1 (= threshold)
-      const trigger = makeMemWithEmbedding('m-trigger', 'Trigger', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
+      const trigger = makeSearchMem('m-trigger', 'Trigger', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-stale-dropped', 'fragment', 'ctx1');
 
-      // The stale mem (orthogonal to focus) must be dropped
+      // The stale mem (orthogonal to currentVec [1,0,0]) must be dropped
       const ids = state.loaded.map(m => m.id);
       expect(ids).not.toContain('m-drop');
     });
@@ -785,20 +745,20 @@ describe('ContextFactory', () => {
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-sorted');
 
-      // focus: [1, 0, 0]
-      state.focus = [1, 0, 0];
+      // S2.6: all mems aligned with currentVec; test verifies chronological ordering only
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
 
       // 3 mems in non-chronological order (to verify rebuild sorts them)
-      state.loaded.push(makeMemWithEmbedding('m-late', 'Late mem', new Date('2024-03-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-early', 'Early mem', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-mid', 'Mid mem', new Date('2024-02-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m-late', 'Late mem', new Date('2024-03-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m-early', 'Early mem', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m-mid', 'Mid mem', new Date('2024-02-01T00:00:00.000Z'), [1, 0, 0]));
       state.loadedMemIds.add('m-late');
       state.loadedMemIds.add('m-early');
       state.loadedMemIds.add('m-mid');
       state.oooCounter = 0;
 
       // remember() triggers rebuild
-      const trigger = makeMemWithEmbedding('m-t', 'T', new Date('2024-04-01T00:00:00.000Z'), [1, 0, 0]);
+      const trigger = makeSearchMem('m-t', 'T', new Date('2024-04-01T00:00:00.000Z'), [1, 0, 0]);
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-sorted', 'fragment', 'ctx1');
@@ -820,15 +780,17 @@ describe('ContextFactory', () => {
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-cachepoint-reset');
 
-      state.focus = [1, 0, 0];
-      state.loaded.push(makeMemWithEmbedding('m1', 'S1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m2', 'S2', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]));
+      // S2.6: embed returns [1, 0, 0] → currentVec = [1, 0, 0] for softRebuild scoring
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
+
+      state.loaded.push(makeLoadedMem('m1', 'S1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m2', 'S2', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]));
       state.loadedMemIds.add('m1');
       state.loadedMemIds.add('m2');
       state.cachePoint = 0; // old cachePoint
       state.oooCounter = 0;
 
-      const trigger = makeMemWithEmbedding('m-t', 'T', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]);
+      const trigger = makeSearchMem('m-t', 'T', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]);
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-cachepoint-reset', 'fragment', 'ctx1');
@@ -841,14 +803,16 @@ describe('ContextFactory', () => {
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 2 });
       const state = f.getOrCreateSession('s-ooocounter-reset');
 
-      state.focus = [1, 0, 0];
-      state.loaded.push(makeMemWithEmbedding('m1', 'S1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      // S2.6: embed returns [1, 0, 0] → currentVec = [1, 0, 0] for softRebuild scoring
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
+
+      state.loaded.push(makeLoadedMem('m1', 'S1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
       state.loadedMemIds.add('m1');
       state.oooCounter = 1; // need 1 more to reach threshold of 2
 
       const triggers = [
-        makeMemWithEmbedding('m-t1', 'T1', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]),
-        makeMemWithEmbedding('m-t2', 'T2', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]),
+        makeSearchMem('m-t1', 'T1', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]),
+        makeSearchMem('m-t2', 'T2', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]),
       ];
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce(triggers);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
@@ -861,20 +825,21 @@ describe('ContextFactory', () => {
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-memids-rebuilt');
 
-      state.focus = [1, 0, 0];
+      // S2.6: embed returns [1, 0, 0] → currentVec = [1, 0, 0] for softRebuild scoring
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
 
       // 4 mems: 3 relevant, 1 stale to be dropped
-      state.loaded.push(makeMemWithEmbedding('m-keep1', 'K1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-keep2', 'K2', new Date('2024-01-02T00:00:00.000Z'), [0.99, 0.01, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-keep3', 'K3', new Date('2024-01-03T00:00:00.000Z'), [0.98, 0.02, 0]));
-      state.loaded.push(makeMemWithEmbedding('m-drop', 'Drop', new Date('2024-01-04T00:00:00.000Z'), [0, 1, 0]));
+      state.loaded.push(makeLoadedMem('m-keep1', 'K1', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
+      state.loaded.push(makeLoadedMem('m-keep2', 'K2', new Date('2024-01-02T00:00:00.000Z'), [0.99, 0.01, 0]));
+      state.loaded.push(makeLoadedMem('m-keep3', 'K3', new Date('2024-01-03T00:00:00.000Z'), [0.98, 0.02, 0]));
+      state.loaded.push(makeLoadedMem('m-drop', 'Drop', new Date('2024-01-04T00:00:00.000Z'), [0, 1, 0]));
       state.loadedMemIds.add('m-keep1');
       state.loadedMemIds.add('m-keep2');
       state.loadedMemIds.add('m-keep3');
       state.loadedMemIds.add('m-drop');
       state.oooCounter = 0;
 
-      const trigger = makeMemWithEmbedding('m-t', 'T', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
+      const trigger = makeSearchMem('m-t', 'T', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-memids-rebuilt', 'fragment', 'ctx1');
@@ -888,48 +853,28 @@ describe('ContextFactory', () => {
 
     it('scores against embeddings.full (1536-dim) — dim guard', async () => {
       // This test verifies softRebuild uses mem.embeddings.full for scoring.
-      // focus is 3-dim (simulating 1536 in production).
-      // The "relevant" mem has full=[1,0,0] (matches focus — should be kept).
-      // The "stale" mem has full=[0,1,0] (orthogonal to focus — should be dropped).
+      // currentVec is [1,0,0] (from embed mock).
+      // The "relevant" mem has full=[1,0,0] (aligns with currentVec — should be kept).
+      // The "stale" mem has full=[0,1,0] (orthogonal to currentVec — should be dropped).
       // keepRatio=0.5 keeps only 1 of the 2 original mems.
       const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1, keepRatio: 0.5 });
       const state = f.getOrCreateSession('s-dim-guard');
 
-      // focus = [1, 0, 0]
-      state.focus = [1, 0, 0];
+      // S2.6: embed returns [1, 0, 0] → currentVec = [1, 0, 0] for softRebuild scoring
+      vi.mocked(embeddingService.embed).mockResolvedValue({ ok: true, value: { compact: [1, 0, 0] } });
 
-      // "relevant" mem: full=[1,0,0] aligns with focus — must be kept
-      const relevantMem: Mem = {
-        id: 'm-relevant',
-        summary: 'Relevant mem',
-        chunkIds: [],
-        embeddings: { full: [1, 0, 0] },
-        closedAt: new Date('2024-01-01T00:00:00.000Z'),
-      };
+      // "relevant" mem: full=[1,0,0] aligns with currentVec — must be kept
+      state.loaded.push(makeLoadedMem('m-relevant', 'Relevant mem', new Date('2024-01-01T00:00:00.000Z'), [1, 0, 0]));
 
-      // "stale" mem: full=[0,1,0] orthogonal to focus — must be dropped
-      const staleMem: Mem = {
-        id: 'm-stale',
-        summary: 'Stale mem',
-        chunkIds: [],
-        embeddings: { full: [0, 1, 0] },
-        closedAt: new Date('2024-01-02T00:00:00.000Z'),
-      };
+      // "stale" mem: full=[0,1,0] orthogonal to currentVec — must be dropped
+      state.loaded.push(makeLoadedMem('m-stale', 'Stale mem', new Date('2024-01-02T00:00:00.000Z'), [0, 1, 0]));
 
-      state.loaded.push(relevantMem);
-      state.loaded.push(staleMem);
       state.loadedMemIds.add('m-relevant');
       state.loadedMemIds.add('m-stale');
       state.oooCounter = 0;
 
       // Trigger rebuild with keepRatio=0.5 (keeps ceil(2*0.5)=1 mem)
-      const trigger: Mem = {
-        id: 'm-trigger',
-        summary: 'Trigger',
-        chunkIds: [],
-        embeddings: { full: [1, 0, 0] },
-        closedAt: new Date('2024-01-03T00:00:00.000Z'),
-      };
+      const trigger = makeSearchMem('m-trigger', 'Trigger', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]);
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-dim-guard', 'fragment', 'ctx1');
@@ -1023,7 +968,7 @@ describe('ContextFactory', () => {
       expect(state.rawTail).toHaveLength(1); // step 1 already ran before embed failure
     });
 
-    it('does not modify focus or loaded when embed fails', async () => {
+    it('does not modify loaded when embed fails', async () => {
       vi.mocked(embeddingService.embed).mockResolvedValueOnce({
         ok: false,
         error: { message: 'timeout' },
@@ -1036,9 +981,7 @@ describe('ContextFactory', () => {
       }
 
       const state = factory.getOrCreateSession('s-embed-fail-state');
-      // focus never shifted (step 2 failed before shiftFocus)
-      expect(state.focus).toHaveLength(0);
-      // no mems loaded (steps 3-5 never ran)
+      // no mems loaded (steps 3-5 never ran after embed failure)
       expect(state.loaded).toHaveLength(0);
       expect(state.oooCounter).toBe(0);
     });
@@ -1412,6 +1355,238 @@ describe('ContextFactory', () => {
       // sessionVec should now reflect [0, 1, 0] normalized = [0, 1, 0]
       expect(state.sessionVec![0]).toBeCloseTo(0, 5);
       expect(state.sessionVec![1]).toBeCloseTo(1, 5);
+    });
+  });
+
+  // ── S2.6: refined recall — current-vector per-turn + session-vector at reconciliation ──
+
+  describe('S2.6 — per-remember recall uses currentVec (NOT EMA focus)', () => {
+    it('EMA focus is removed: session has no focus field after remember()', async () => {
+      await factory.remember('s-no-focus', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s-no-focus');
+      // focus must be gone — the field must not exist on the session object
+      expect('focus' in state).toBe(false);
+    });
+
+    it('alpha config is removed: factory.config has no alpha field', () => {
+      const f = new ContextFactory(store, embeddingService, indexer);
+      expect('alpha' in f.config).toBe(false);
+    });
+
+    it('searchMemsByVector is called with currentVec = normalize(embedding) on each remember()', async () => {
+      const searchSpy = vi.spyOn(store, 'searchMemsByVector');
+      // embed mock returns [0.1, 0.2, 0.3]
+      await factory.remember('s-currvec', 'fragment', 'ctx1');
+      // currentVec = normalize([0.1, 0.2, 0.3])
+      const raw = [0.1, 0.2, 0.3];
+      const norm = Math.sqrt(raw.reduce((s, v) => s + v * v, 0));
+      const expected = raw.map(v => v / norm);
+      expect(searchSpy).toHaveBeenCalledWith(
+        expect.arrayContaining(expected.map(v => expect.closeTo(v, 5))),
+        expect.any(Number),
+        'ctx1',
+      );
+    });
+
+    it('second remember() uses fresh currentVec (normalized embed), NOT accumulated EMA', async () => {
+      const searchSpy = vi.spyOn(store, 'searchMemsByVector');
+      // First call: embed returns [0.1, 0.2, 0.3]
+      await factory.remember('s-fresh-currvec', 'first', 'ctx1');
+      // Second call: embed returns [1, 0, 0] (different vector)
+      vi.mocked(embeddingService.embed).mockResolvedValueOnce({
+        ok: true,
+        value: { compact: [1, 0, 0] },
+      });
+      await factory.remember('s-fresh-currvec', 'second', 'ctx1');
+      // Second call's search must use normalize([1, 0, 0]) = [1, 0, 0], NOT an EMA blend
+      const secondCallArgs = searchSpy.mock.calls[1]!;
+      const vecUsed = secondCallArgs[0] as number[];
+      expect(vecUsed[0]).toBeCloseTo(1, 5);
+      expect(vecUsed[1]).toBeCloseTo(0, 5);
+      expect(vecUsed[2]).toBeCloseTo(0, 5);
+    });
+
+    it('one searchMemsByVector call per remember() — NOT two', async () => {
+      const searchSpy = vi.spyOn(store, 'searchMemsByVector');
+      await factory.remember('s-one-search', 'fragment', 'ctx1');
+      expect(searchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('loaded mems from per-remember recall carry provenance "current"', async () => {
+      const mem: Mem = {
+        id: 'mem-curr',
+        summary: 'Current recall mem',
+        chunkIds: ['chunk-x'],
+        embeddings: { full: [1, 0, 0] },
+        closedAt: new Date(),
+      };
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([mem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
+
+      await factory.remember('s-prov-current', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s-prov-current');
+      expect(state.loaded).toHaveLength(1);
+      expect(state.loaded[0]!.provenance).toBe('current');
+    });
+  });
+
+  describe('S2.6 — session-vector recall at reconciliation (backbone)', () => {
+    function makeMemWithEmbedding(id: string, embedding: number[]): Mem {
+      return {
+        id,
+        summary: 'test mem ' + id,
+        chunkIds: [],
+        embeddings: { full: embedding },
+        closedAt: new Date(),
+      };
+    }
+
+    it('at reconciliation, searchMemsByVector is called a second time with sessionVec', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      const closedMems = [makeMemWithEmbedding('cm1', [1, 0, 0])];
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue(closedMems);
+
+      await f.remember('s-bb-search', 'trigger', 'ctx-bb');
+      await Promise.resolve();
+
+      const searchSpy = vi.spyOn(store, 'searchMemsByVector');
+      // Clear prior call history from remember('trigger') so we only count calls from 'second'
+      searchSpy.mockClear();
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      // sessionVec from closedMems: normalize([1,0,0]) = [1,0,0]
+      // The reconciliation call must use sessionVec [1,0,0] as the query vector
+      const backboneMem: Mem = {
+        id: 'backbone-mem',
+        summary: 'backbone mem',
+        chunkIds: [],
+        embeddings: { full: [1, 0, 0] },
+        closedAt: new Date('2024-01-01T00:00:00.000Z'),
+      };
+      // First searchMems call (reconciliation backbone): returns backboneMem
+      // Second searchMems call (per-remember currentVec): returns []
+      vi.mocked(store.searchMemsByVector)
+        .mockResolvedValueOnce([backboneMem])
+        .mockResolvedValueOnce([]);
+
+      await f.remember('s-bb-search', 'second', 'ctx-bb');
+
+      // Two searchMemsByVector calls: first is backbone (sessionVec), second is current
+      expect(searchSpy).toHaveBeenCalledTimes(2);
+      // First call uses sessionVec = [1, 0, 0]
+      const firstCallVec = searchSpy.mock.calls[0]![0] as number[];
+      expect(firstCallVec[0]).toBeCloseTo(1, 5);
+      expect(firstCallVec[1]).toBeCloseTo(0, 5);
+    });
+
+    it('backbone mems from session-vector recall carry provenance "backbone"', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      const closedMems = [makeMemWithEmbedding('cm1', [1, 0, 0])];
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue(closedMems);
+
+      await f.remember('s-bb-prov', 'trigger', 'ctx-bb-prov');
+      await Promise.resolve();
+
+      const backboneMem: Mem = {
+        id: 'bb-mem',
+        summary: 'backbone',
+        chunkIds: [],
+        embeddings: { full: [1, 0, 0] },
+        closedAt: new Date('2024-01-01T00:00:00.000Z'),
+      };
+      vi.mocked(store.searchMemsByVector)
+        .mockResolvedValueOnce([backboneMem]) // backbone search
+        .mockResolvedValueOnce([]);            // current search
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-bb-prov', 'second', 'ctx-bb-prov');
+
+      const state = f.getOrCreateSession('s-bb-prov');
+      const bbLoaded = state.loaded.find(m => m.id === 'bb-mem');
+      expect(bbLoaded).toBeDefined();
+      expect(bbLoaded!.provenance).toBe('backbone');
+    });
+
+    it('cold-start (sessionVec null) skips backbone search', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 999 });
+      // No reconciliation → sessionVec stays null
+      const searchSpy = vi.spyOn(store, 'searchMemsByVector');
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-cold', 'fragment', 'ctx-cold');
+
+      // Only 1 searchMemsByVector call (currentVec), NOT 2
+      expect(searchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('backbone dedup: backbone mem already in loadedMemIds is excluded', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      const closedMems = [makeMemWithEmbedding('cm1', [1, 0, 0])];
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue(closedMems);
+
+      await f.remember('s-bb-dedup', 'trigger', 'ctx-bb-dedup');
+      await Promise.resolve();
+
+      // Pre-load a mem manually so it's already in loadedMemIds
+      const existingMem: Mem & { provenance: 'current' | 'backbone' } = {
+        id: 'already-loaded',
+        summary: 'already in session',
+        chunkIds: [],
+        embeddings: { full: [1, 0, 0] },
+        closedAt: new Date(),
+        provenance: 'current',
+      };
+      const state = f.getOrCreateSession('s-bb-dedup');
+      state.loaded.push(existingMem);
+      state.loadedMemIds.add('already-loaded');
+
+      vi.mocked(store.searchMemsByVector)
+        .mockResolvedValueOnce([existingMem]) // backbone returns already-loaded
+        .mockResolvedValueOnce([]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+
+      await f.remember('s-bb-dedup', 'second', 'ctx-bb-dedup');
+
+      // Still only 1 loaded (not duplicated)
+      expect(state.loaded.filter(m => m.id === 'already-loaded')).toHaveLength(1);
+    });
+
+    it('backbone and current searches share the same dedup set (cross-provenance dedup)', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      const closedMems = [makeMemWithEmbedding('cm1', [1, 0, 0])];
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue(closedMems);
+
+      await f.remember('s-bb-cross-dedup', 'trigger', 'ctx-cross');
+      await Promise.resolve();
+
+      const sharedMem: Mem = {
+        id: 'shared-mem',
+        summary: 'in both searches',
+        chunkIds: [],
+        embeddings: { full: [1, 0, 0] },
+        closedAt: new Date('2024-01-01T00:00:00.000Z'),
+      };
+      // backbone returns sharedMem, current also returns sharedMem
+      vi.mocked(store.searchMemsByVector)
+        .mockResolvedValueOnce([sharedMem]) // backbone
+        .mockResolvedValueOnce([sharedMem]); // current
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+
+      await f.remember('s-bb-cross-dedup', 'second', 'ctx-cross');
+
+      const state = f.getOrCreateSession('s-bb-cross-dedup');
+      // sharedMem should appear exactly once (dedup across both searches)
+      expect(state.loaded.filter(m => m.id === 'shared-mem')).toHaveLength(1);
     });
   });
 });
