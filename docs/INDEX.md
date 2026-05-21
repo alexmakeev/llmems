@@ -8,7 +8,7 @@
 
 Ветка `feature/context-factory`. **Фаза 1 baseline context factory завершена.**
 
-Epic `vp3` закрыт. Все суббиды vp3.1, vp3.3–vp3.7 и `zij` (переключение эмбеддингов) — done.
+Epic `vp3` закрыт. Все суббиды vp3.1–vp3.7 и `zij` (переключение эмбеддингов) — done.
 
 **Что реализовано:**
 - `ContextFactory.remember()` — сохранение фрагмента в rawTail, EMA-сдвиг вектора фокуса, ANN-поиск по фокусу, dedup-фильтр (уже загруженные + raw-present чанки), мягкая перестройка по порогу.
@@ -34,12 +34,6 @@ Baseline composite 0.9167 — точка отсчёта. Фаза 2 должна
 
 ## Активные биды
 
-### P1
-
-| ID | Описание | Статус |
-|----|----------|--------|
-| vp3.2 | getCurrentContext(sessionId): pure projection, rename from prepareContext | open |
-
 ### P2 — Фаза 2
 
 | ID | Описание | Статус |
@@ -49,23 +43,29 @@ Baseline composite 0.9167 — точка отсчёта. Фаза 2 должна
 | xcz.2 | Hierarchical mems (year/quarter/month/day) | open |
 | xcz.3 | Graph dosborka — neighborhood expansion по 7 осям | open |
 | xcz.4 | Измерение uplift Phase 2 vs baseline | open |
-| e08 | Session lifecycle (TTL/LRU/eviction) | deferred |
-| drc | rawTail drain (raw→mem replacement) | deferred |
-| dnh | Gold-set для baseline (не на этой машине) | deferred |
-| wji | Runbook benchmark pipeline (docs/benchmark.md) | deferred |
-| 2le | fix: re-extract-projections без openaiModel/openaiBaseUrl | deferred |
-| a9r | security: dev-DB password в defaults benchmark scripts | deferred |
 
-### P3 — Backlog
+### Deferred
 
 | ID | Описание |
 |----|----------|
 | 991 | Слоёнка layer 2/3: provenance split (focus-loaded vs raw-tail) |
+| tda | Remove old context path (buildContext/buildTopicContext) — Path A coexistence cleanup |
+| drc | rawTail drain (raw→mem replacement) |
+| e08 | Session lifecycle (TTL/LRU/eviction) |
 | mai | Edge cases тесты ContextFactory |
 | fqx | Rename `EmbeddingValue.compact` → `vector` |
+| dnh | Gold-set для baseline (не на этой машине) |
 | jvu | Schema-init/migration в репо |
-| sbg | Cleanup stale gitea remote |
+
+### Backlog
+
+| ID | Описание |
+|----|----------|
+| 2le | fix: re-extract-projections без openaiModel/openaiBaseUrl |
 | bgy | Experiment: сравнение embedding моделей на baseline vectorRecall |
+| a9r | security: dev-DB password в defaults benchmark scripts |
+| wji | Runbook benchmark pipeline (docs/benchmark.md) |
+| sbg | Cleanup stale gitea remote |
 | 76f | Redesign graphEnrichedRecall scoring |
 
 ---
