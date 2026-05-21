@@ -166,13 +166,258 @@ describe('ContextFactory', () => {
     });
   });
 
-  // ── remember stub ─────────────────────────────────────────────────────────
+  // ── remember — rawTail append ─────────────────────────────────────────────
 
-  describe('remember (stub)', () => {
-    it('throws "not implemented" when called', async () => {
-      await expect(
-        factory.remember('session-1', 'some fragment'),
-      ).rejects.toThrow('not implemented');
+  describe('remember — rawTail append', () => {
+    it('appends a RawFragment to rawTail with correct content', async () => {
+      await factory.remember('s1', 'hello world', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.rawTail).toHaveLength(1);
+      expect(state.rawTail[0]!.content).toBe('hello world');
+    });
+
+    it('sets receivedAt to a recent Date', async () => {
+      const before = new Date();
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const after = new Date();
+      const state = factory.getOrCreateSession('s1');
+      const ts = state.rawTail[0]!.receivedAt;
+      expect(ts.getTime()).toBeGreaterThanOrEqual(before.getTime());
+      expect(ts.getTime()).toBeLessThanOrEqual(after.getTime());
+    });
+
+    it('accumulates multiple rawTail entries in order', async () => {
+      await factory.remember('s1', 'first', 'ctx1');
+      await factory.remember('s1', 'second', 'ctx1');
+      await factory.remember('s1', 'third', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.rawTail).toHaveLength(3);
+      expect(state.rawTail[0]!.content).toBe('first');
+      expect(state.rawTail[1]!.content).toBe('second');
+      expect(state.rawTail[2]!.content).toBe('third');
+    });
+  });
+
+  // ── remember — focus shift ─────────────────────────────────────────────────
+
+  describe('remember — focus shift (EMA)', () => {
+    it('sets focus to embedding value on first fragment', async () => {
+      // embed mock returns compact: [0.1, 0.2, 0.3]
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      // First fragment: focus = normalize(embed) ≈ norm([0.1, 0.2, 0.3])
+      const norm = Math.sqrt(0.1 * 0.1 + 0.2 * 0.2 + 0.3 * 0.3);
+      expect(state.focus[0]).toBeCloseTo(0.1 / norm, 5);
+      expect(state.focus[1]).toBeCloseTo(0.2 / norm, 5);
+      expect(state.focus[2]).toBeCloseTo(0.3 / norm, 5);
+    });
+
+    it('calls embed with the fragment text', async () => {
+      const embedSpy = vi.spyOn(embeddingService, 'embed');
+      await factory.remember('s1', 'test-text', 'ctx1');
+      expect(embedSpy).toHaveBeenCalledWith('test-text');
+    });
+
+    it('applies EMA on second fragment: focus = normalize(focus*(1-alpha) + emb*alpha)', async () => {
+      // alpha default = 0.5
+      // embed always returns [0.1, 0.2, 0.3]
+      await factory.remember('s1', 'first', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      const focusAfterFirst = [...state.focus];
+
+      await factory.remember('s1', 'second', 'ctx1');
+      const embRaw = [0.1, 0.2, 0.3];
+      const embNorm = Math.sqrt(embRaw.reduce((s, v) => s + v * v, 0));
+      const embNormalized = embRaw.map(v => v / embNorm);
+
+      const alpha = 0.5;
+      const raw = focusAfterFirst.map((f, i) => f * (1 - alpha) + embNormalized[i]! * alpha);
+      const rawNorm = Math.sqrt(raw.reduce((s, v) => s + v * v, 0));
+      const expected = raw.map(v => v / rawNorm);
+
+      for (let i = 0; i < expected.length; i++) {
+        expect(state.focus[i]).toBeCloseTo(expected[i]!, 5);
+      }
+    });
+
+    it('uses configurable alpha for EMA', async () => {
+      const customFactory = new ContextFactory(store, embeddingService, { alpha: 0.8 });
+      // First fragment: focus = normalize(emb)
+      await customFactory.remember('s1', 'first', 'ctx1');
+      const state = customFactory.getOrCreateSession('s1');
+      const focusAfterFirst = [...state.focus];
+
+      await customFactory.remember('s1', 'second', 'ctx1');
+      const embRaw = [0.1, 0.2, 0.3];
+      const embNorm = Math.sqrt(embRaw.reduce((s, v) => s + v * v, 0));
+      const embNormalized = embRaw.map(v => v / embNorm);
+
+      const alpha = 0.8;
+      const raw = focusAfterFirst.map((f, i) => f * (1 - alpha) + embNormalized[i]! * alpha);
+      const rawNorm = Math.sqrt(raw.reduce((s, v) => s + v * v, 0));
+      const expected = raw.map(v => v / rawNorm);
+
+      for (let i = 0; i < expected.length; i++) {
+        expect(state.focus[i]).toBeCloseTo(expected[i]!, 5);
+      }
+    });
+  });
+
+  // ── remember — mem loading ────────────────────────────────────────────────
+
+  describe('remember — mem loading from store', () => {
+    it('calls searchMemsByVector with current focus and contextId', async () => {
+      const searchSpy = vi.spyOn(store, 'searchMemsByVector');
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(searchSpy).toHaveBeenCalledWith(state.focus, expect.any(Number), 'ctx1');
+    });
+
+    it('adds search results to session.loaded and loadedMemIds', async () => {
+      const mem: Mem = {
+        id: 'mem-1',
+        summary: 'Test summary',
+        chunkIds: ['chunk-99'],
+        embeddings: { full: [], compact: [], micro: [] },
+        closedAt: new Date(),
+      };
+      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([mem]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.loaded).toHaveLength(1);
+      expect(state.loaded[0]).toBe(mem);
+      expect(state.loadedMemIds.has('mem-1')).toBe(true);
+    });
+
+    it('increments oooCounter by the number of survivors added', async () => {
+      const mems: Mem[] = [
+        { id: 'm1', summary: 's1', chunkIds: [], embeddings: { full: [], compact: [], micro: [] }, closedAt: new Date() },
+        { id: 'm2', summary: 's2', chunkIds: [], embeddings: { full: [], compact: [], micro: [] }, closedAt: new Date() },
+      ];
+      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce(mems);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.oooCounter).toBe(2);
+    });
+
+    it('oooCounter stays 0 when search returns no results', async () => {
+      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.oooCounter).toBe(0);
+    });
+  });
+
+  // ── Step 5: dedup filter ───────────────────────────────────────────────────
+
+  describe('dedup filter — already-loaded mem excluded', () => {
+    it('does not add a mem that is already in loadedMemIds', async () => {
+      const mem: Mem = {
+        id: 'dup-mem',
+        summary: 'Already loaded',
+        chunkIds: [],
+        embeddings: { full: [], compact: [], micro: [] },
+        closedAt: new Date(),
+      };
+
+      // First call loads the mem
+      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set());
+
+      await factory.remember('s1', 'first', 'ctx1');
+      await factory.remember('s1', 'second', 'ctx1'); // same mem returned again
+
+      const state = factory.getOrCreateSession('s1');
+      // Should appear exactly once
+      expect(state.loaded.filter(m => m.id === 'dup-mem')).toHaveLength(1);
+      // oooCounter should be 1 (only first call adds it)
+      expect(state.oooCounter).toBe(1);
+    });
+  });
+
+  describe('dedup filter — mem with active source-chunk excluded', () => {
+    it('does not load a mem whose chunkId is still in active set', async () => {
+      const mem: Mem = {
+        id: 'raw-mem',
+        summary: 'Still raw',
+        chunkIds: ['chunk-active'],
+        embeddings: { full: [], compact: [], micro: [] },
+        closedAt: new Date(),
+      };
+      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set(['chunk-active']));
+
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.loaded).toHaveLength(0);
+      expect(state.oooCounter).toBe(0);
+    });
+  });
+
+  describe('dedup filter — mem with archived source-chunk admitted', () => {
+    it('loads a mem whose chunkId is not in the active set (already archived)', async () => {
+      const mem: Mem = {
+        id: 'archived-mem',
+        summary: 'Archived chunk',
+        chunkIds: ['chunk-archived'],
+        embeddings: { full: [], compact: [], micro: [] },
+        closedAt: new Date(),
+      };
+      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
+      // Active set does NOT contain chunk-archived
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set(['chunk-something-else']));
+
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.loaded).toHaveLength(1);
+      expect(state.loaded[0]!.id).toBe('archived-mem');
+    });
+
+    it('mem becomes admitted after its chunk leaves the active set (handover case)', async () => {
+      const mem: Mem = {
+        id: 'handover-mem',
+        summary: 'Handover case',
+        chunkIds: ['chunk-transitioning'],
+        embeddings: { full: [], compact: [], micro: [] },
+        closedAt: new Date(),
+      };
+
+      // First call: chunk is active — mem excluded
+      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set(['chunk-transitioning']));
+      await factory.remember('s1', 'first', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.loaded).toHaveLength(0);
+
+      // Second call: chunk is now archived — mem admitted
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      await factory.remember('s1', 'second', 'ctx1');
+      expect(state.loaded).toHaveLength(1);
+      expect(state.loaded[0]!.id).toBe('handover-mem');
+    });
+  });
+
+  describe('dedup filter — mem with multiple chunkIds', () => {
+    it('excludes mem if ANY of its chunkIds is active', async () => {
+      const mem: Mem = {
+        id: 'multi-chunk-mem',
+        summary: 'Multi chunk',
+        chunkIds: ['chunk-a', 'chunk-b-active'],
+        embeddings: { full: [], compact: [], micro: [] },
+        closedAt: new Date(),
+      };
+      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set(['chunk-b-active']));
+
+      await factory.remember('s1', 'fragment', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+      expect(state.loaded).toHaveLength(0);
     });
   });
 
