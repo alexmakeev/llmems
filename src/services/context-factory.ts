@@ -13,8 +13,7 @@
 //   - softRebuild(): drop stale mems by cosine-sim-to-focus, re-sort chronologically
 //   - getCurrentContext(): serialize session state to sloyonka text (no DB calls)
 
-import type { IMemStore, Mem } from '../types.js';
-import type { IEmbeddingService } from '../openrouter-chat.js';
+import type { IVectorMemStore, Mem, IEmbeddingService } from '../types.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Session working state
@@ -41,6 +40,12 @@ export interface RawFragment {
 export interface SessionWorkingState {
   /** Current session focus vector (embedding of recent fragments). Empty before first remember(). */
   focus: number[];
+  /**
+   * Established embedding dimension for this session. Set on the first embedding received.
+   * All subsequent embeddings must match this dimension or remember() throws a clear error.
+   * null before the first remember() call.
+   */
+  focusDim: number | null;
   /** Ordered list of mems loaded into the session cache (oldest first after rebuild). */
   loaded: Mem[];
   /** Set of mem IDs already in `loaded` — for O(1) dedup checks. */
@@ -210,12 +215,21 @@ export class ContextFactory {
   /** Resolved configuration (public for test assertions). */
   readonly config: ContextFactoryConfig;
 
-  private readonly store: IMemStore;
+  private readonly store: IVectorMemStore;
   private readonly embeddingService: IEmbeddingService;
   private readonly sessions = new Map<string, SessionWorkingState>();
 
+  /**
+   * Constructs a ContextFactory.
+   *
+   * @param store - A store that implements IVectorMemStore (must support
+   *   searchMemsByVector and getActiveChunkIds). PostgresMemStore satisfies this.
+   *   InMemoryMemStore does NOT — passing it here is a compile error by design.
+   * @param embeddingService - Embedding service for focus vector updates.
+   * @param config - Optional configuration overrides.
+   */
   constructor(
-    store: IMemStore,
+    store: IVectorMemStore,
     embeddingService: IEmbeddingService,
     config?: Partial<ContextFactoryConfig>,
   ) {
@@ -237,6 +251,7 @@ export class ContextFactory {
     if (state === undefined) {
       state = {
         focus: [],
+        focusDim: null,
         loaded: [],
         loadedMemIds: new Set<string>(),
         cachePoint: 0,
@@ -293,17 +308,27 @@ export class ContextFactory {
     // in softRebuild() against mem.embeddings.full (also 1024-dim, from mems.embedding
     // DB column). Do NOT substitute a smaller embedding here — dimension must match.
     // Rename cleanup is deferred to bead llmems-fqx.
-    session.focus = shiftFocus(session.focus, embedResult.value.compact, this.config.alpha);
+    //
+    // DIMENSION ASSERTION: fail fast on mismatch rather than silently corrupting focus.
+    // A 1024-vs-256 mismatch would produce a focus vector on the wrong hypersphere,
+    // leading to incorrect cosine similarity results in searchMemsByVector and softRebuild.
+    const embeddingVector = embedResult.value.compact;
+    if (session.focusDim === null) {
+      // First embedding: establish the session's dimension contract.
+      session.focusDim = embeddingVector.length;
+    } else if (embeddingVector.length !== session.focusDim) {
+      throw new Error(
+        `Embedding dimension mismatch: expected ${session.focusDim}, got ${embeddingVector.length}. ` +
+        `Ensure the embedding service returns consistent vector lengths within a session.`,
+      );
+    }
+    session.focus = shiftFocus(session.focus, embeddingVector, this.config.alpha);
 
     // 3. Search for relevant mems using the updated focus
-    const candidates = this.store.searchMemsByVector
-      ? await this.store.searchMemsByVector(session.focus, this.config.searchK, contextId)
-      : [];
+    const candidates = await this.store.searchMemsByVector(session.focus, this.config.searchK, contextId);
 
     // 4. Dedup filter + get active chunk ids in one call
-    const activeChunkIds = this.store.getActiveChunkIds
-      ? await this.store.getActiveChunkIds(contextId)
-      : new Set<string>();
+    const activeChunkIds = await this.store.getActiveChunkIds(contextId);
 
     const survivors = candidates.filter((mem: Mem) => {
       // (a) Exclude already-loaded mems
@@ -457,10 +482,23 @@ export class ContextFactory {
   }
 
   /**
+   * Escape a string for safe XML embedding.
+   * Prevents context-poisoning: a summary containing <, >, or & would break
+   * the <mem>...</mem> structure the LLM consumes.
+   * Order matters: & must be escaped first to avoid double-escaping.
+   */
+  private escapeXml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /**
    * Serialize a single mem to XML format: <mem ts="ISO8601">summary</mem>.
-   * ts = mem.closedAt in ISO 8601 (UTC).
+   * ts = mem.closedAt in ISO 8601 (UTC). summary is XML-escaped.
    */
   private serializeMem(mem: Mem): string {
-    return `<mem ts="${mem.closedAt.toISOString()}">${mem.summary}</mem>`;
+    return `<mem ts="${mem.closedAt.toISOString()}">${this.escapeXml(mem.summary)}</mem>`;
   }
 }

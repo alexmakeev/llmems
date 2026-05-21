@@ -9,12 +9,15 @@ export { MemManager, InMemoryMemStore } from './services/mem-manager.js';
 export { PostgresMemStore } from './services/postgres-mem-store.js';
 export type {
   IMemStore,
+  IVectorMemStore,
   MemChunk,
   Mem,
   MemContextData,
   RecallNode,
   RecallEdge,
   VocabularyTerm,
+  IEmbeddingService,
+  EmbeddingValue,
 } from './types.js';
 
 // ============================================================

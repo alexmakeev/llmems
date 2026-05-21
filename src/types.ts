@@ -87,6 +87,26 @@ export interface Mem {
   closedAt: Date;
 }
 
+// ── Embedding Service Types ───────────────────────────────────────
+
+/**
+ * Result type returned by IEmbeddingService.embed().
+ * The `compact` field holds the embedding vector (1024-dim in production).
+ * The field name "compact" is a historical artefact from an earlier multi-resolution
+ * embedding design. Rename is deferred to bead llmems-fqx.
+ */
+export interface EmbeddingValue {
+  compact: number[];
+}
+
+/**
+ * Port: Embedding Service — generates embedding vectors for text.
+ * Used by ContextFactory (focus shift) and OpenRouterChat (topic embeddings).
+ */
+export interface IEmbeddingService {
+  embed(text: string): Promise<import('./shared/result.js').Result<EmbeddingValue, { message: string }>>;
+}
+
 /**
  * Port: Mem Store — storage interface for mem state
  *
@@ -122,6 +142,32 @@ export interface IMemStore {
     newGeneralSummary: string | null,
     contextId: string,
   ): Promise<void>;
+}
+
+/**
+ * Narrower store interface required by ContextFactory.
+ *
+ * ContextFactory needs vector search to function correctly — without it, remember()
+ * would silently load zero mems, violating the one-path rule. By requiring these
+ * methods at the constructor boundary, the type system enforces correctness.
+ *
+ * IMemStore keeps searchMemsByVector and getActiveChunkIds optional so that
+ * InMemoryMemStore (which only implements the base interface) still satisfies
+ * IMemStore. ContextFactory explicitly requires the narrower IVectorMemStore.
+ *
+ * PostgresMemStore satisfies IVectorMemStore. InMemoryMemStore does NOT (correct).
+ */
+export interface IVectorMemStore extends IMemStore {
+  /**
+   * ANN vector search over mems.embedding (1024-dim) via HNSW cosine index.
+   * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
+   */
+  searchMemsByVector(vector: number[], k: number, contextId: string): Promise<Mem[]>;
+  /**
+   * Returns the set of mem_chunk IDs that are still in 'active' status (raw-present signal).
+   * Used by ContextFactory dedup: a mem whose chunkIds overlap this set should not be loaded.
+   */
+  getActiveChunkIds(contextId: string): Promise<Set<string>>;
 }
 
 /**

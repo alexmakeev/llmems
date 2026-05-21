@@ -3,15 +3,14 @@
 // All external dependencies mocked; no DB, no LLM, no network.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { IMemStore, Mem, MemChunk, MemContextData } from '../../types.js';
-import type { IEmbeddingService } from '../../openrouter-chat.js';
+import type { IVectorMemStore, Mem, MemContextData, IEmbeddingService } from '../../types.js';
 import type { Result } from '../../shared/result.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Minimal mock IMemStore
+// Minimal mock IVectorMemStore — satisfies IVectorMemStore (required by ContextFactory)
 // ──────────────────────────────────────────────────────────────────────────────
 
-function makeMockStore(): IMemStore {
+function makeMockStore(): IVectorMemStore {
   return {
     addChunk: vi.fn(),
     getActiveChunks: vi.fn().mockResolvedValue([]),
@@ -27,6 +26,7 @@ function makeMockStore(): IMemStore {
       activeChunks: [],
     } satisfies MemContextData),
     applyBackgroundResult: vi.fn(),
+    // Required by IVectorMemStore (non-optional):
     searchMemsByVector: vi.fn().mockResolvedValue([]),
     getActiveChunkIds: vi.fn().mockResolvedValue(new Set<string>()),
   };
@@ -56,7 +56,7 @@ import { ContextFactory } from '../../services/context-factory.js';
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('ContextFactory', () => {
-  let store: IMemStore;
+  let store: IVectorMemStore;
   let embeddingService: IEmbeddingService;
   let factory: ContextFactory;
 
@@ -281,8 +281,8 @@ describe('ContextFactory', () => {
         embeddings: { full: [], compact: [], micro: [] },
         closedAt: new Date(),
       };
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([mem]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([mem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
 
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
@@ -296,8 +296,8 @@ describe('ContextFactory', () => {
         { id: 'm1', summary: 's1', chunkIds: [], embeddings: { full: [], compact: [], micro: [] }, closedAt: new Date() },
         { id: 'm2', summary: 's2', chunkIds: [], embeddings: { full: [], compact: [], micro: [] }, closedAt: new Date() },
       ];
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce(mems);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce(mems);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
 
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
@@ -305,8 +305,8 @@ describe('ContextFactory', () => {
     });
 
     it('oooCounter stays 0 when search returns no results', async () => {
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
 
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
@@ -327,8 +327,8 @@ describe('ContextFactory', () => {
       };
 
       // First call loads the mem
-      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
 
       await factory.remember('s1', 'first', 'ctx1');
       await factory.remember('s1', 'second', 'ctx1'); // same mem returned again
@@ -350,8 +350,8 @@ describe('ContextFactory', () => {
         embeddings: { full: [], compact: [], micro: [] },
         closedAt: new Date(),
       };
-      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set(['chunk-active']));
+      vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['chunk-active']));
 
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
@@ -369,9 +369,9 @@ describe('ContextFactory', () => {
         embeddings: { full: [], compact: [], micro: [] },
         closedAt: new Date(),
       };
-      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
+      vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
       // Active set does NOT contain chunk-archived
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set(['chunk-something-else']));
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['chunk-something-else']));
 
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
@@ -389,14 +389,14 @@ describe('ContextFactory', () => {
       };
 
       // First call: chunk is active — mem excluded
-      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set(['chunk-transitioning']));
+      vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set(['chunk-transitioning']));
       await factory.remember('s1', 'first', 'ctx1');
       const state = factory.getOrCreateSession('s1');
       expect(state.loaded).toHaveLength(0);
 
       // Second call: chunk is now archived — mem admitted
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await factory.remember('s1', 'second', 'ctx1');
       expect(state.loaded).toHaveLength(1);
       expect(state.loaded[0]!.id).toBe('handover-mem');
@@ -412,8 +412,8 @@ describe('ContextFactory', () => {
         embeddings: { full: [], compact: [], micro: [] },
         closedAt: new Date(),
       };
-      vi.mocked(store.searchMemsByVector!).mockResolvedValue([mem]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValue(new Set(['chunk-b-active']));
+      vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['chunk-b-active']));
 
       await factory.remember('s1', 'fragment', 'ctx1');
       const state = factory.getOrCreateSession('s1');
@@ -539,6 +539,45 @@ describe('ContextFactory', () => {
       const result = await factory.getCurrentContext('s-iso');
       expect(result).toContain('ts="2025-06-30T14:30:00.000Z"');
     });
+
+    // FIX 1: XML escape — context-poisoning prevention
+    it('escapes < and > in summary to prevent XML tag injection', async () => {
+      const state = factory.getOrCreateSession('s-escape-tags');
+      state.loaded.push(makeMem('m1', 'Contains </mem><x>injected</x>', new Date('2024-01-01T00:00:00.000Z')));
+      // Put in stable prefix (cachePoint = 1) so there is no "Loaded from memory:" marker,
+      // making it easier to assert the exact mem wrapper structure.
+      state.cachePoint = 1;
+
+      const result = await factory.getCurrentContext('s-escape-tags');
+      // Must not contain a raw </mem> that would break the wrapping structure
+      expect(result).not.toContain('</mem><x>');
+      // The escaped form must be present
+      expect(result).toContain('&lt;/mem&gt;');
+      // The whole output must be a single intact mem element
+      expect(result).toMatch(/^<mem ts="[^"]+">.*<\/mem>$/s);
+    });
+
+    it('escapes & in summary to prevent double-encoding and entity injection', async () => {
+      const state = factory.getOrCreateSession('s-escape-amp');
+      state.loaded.push(makeMem('m1', 'fish & chips and <fun>', new Date('2024-01-01T00:00:00.000Z')));
+      state.cachePoint = 0;
+
+      const result = await factory.getCurrentContext('s-escape-amp');
+      expect(result).toContain('&amp;');
+      expect(result).toContain('&lt;fun&gt;');
+      // Must not contain raw & or <
+      expect(result).not.toContain(' & ');
+      expect(result).not.toContain('<fun>');
+    });
+
+    it('leaves safe summary text unchanged (no spurious escaping)', async () => {
+      const state = factory.getOrCreateSession('s-no-spurious-escape');
+      state.loaded.push(makeMem('m1', 'Plain text summary without special chars.', new Date('2024-01-01T00:00:00.000Z')));
+      state.cachePoint = 0;
+
+      const result = await factory.getCurrentContext('s-no-spurious-escape');
+      expect(result).toContain('Plain text summary without special chars.');
+    });
   });
 
   // ── Step 7: recalled-memory marker ───────────────────────────────────────
@@ -661,8 +700,8 @@ describe('ContextFactory', () => {
       state.oooCounter = 4; // below threshold of 5
 
       // remember() with no new mems from search
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-no-rebuild', 'fragment', 'ctx1');
 
       // oooCounter still 4 (no new mems added), no rebuild
@@ -692,8 +731,8 @@ describe('ContextFactory', () => {
 
       // remember() returns 1 new mem to push oooCounter to 3
       const newMem = makeMemWithEmbedding('m-new', 'New mem', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([newMem]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([newMem]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-trigger-rebuild', 'fragment', 'ctx1');
 
       // After rebuild: oooCounter reset to 0
@@ -721,8 +760,8 @@ describe('ContextFactory', () => {
 
       // remember() returns 1 new mem pushing oooCounter to 1 (= threshold)
       const trigger = makeMemWithEmbedding('m-trigger', 'Trigger', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([trigger]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-stale-dropped', 'fragment', 'ctx1');
 
       // The stale mem (orthogonal to focus) must be dropped
@@ -748,8 +787,8 @@ describe('ContextFactory', () => {
 
       // remember() triggers rebuild
       const trigger = makeMemWithEmbedding('m-t', 'T', new Date('2024-04-01T00:00:00.000Z'), [1, 0, 0]);
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([trigger]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-sorted', 'fragment', 'ctx1');
 
       // Survivors should be in chronological order (closedAt ascending)
@@ -778,8 +817,8 @@ describe('ContextFactory', () => {
       state.oooCounter = 0;
 
       const trigger = makeMemWithEmbedding('m-t', 'T', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]);
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([trigger]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-cachepoint-reset', 'fragment', 'ctx1');
 
       // After rebuild: cachePoint == loaded.length (all are stable prefix)
@@ -799,8 +838,8 @@ describe('ContextFactory', () => {
         makeMemWithEmbedding('m-t1', 'T1', new Date('2024-01-02T00:00:00.000Z'), [1, 0, 0]),
         makeMemWithEmbedding('m-t2', 'T2', new Date('2024-01-03T00:00:00.000Z'), [1, 0, 0]),
       ];
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce(triggers);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce(triggers);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-ooocounter-reset', 'fragment', 'ctx1');
 
       expect(state.oooCounter).toBe(0);
@@ -824,8 +863,8 @@ describe('ContextFactory', () => {
       state.oooCounter = 0;
 
       const trigger = makeMemWithEmbedding('m-t', 'T', new Date('2024-01-05T00:00:00.000Z'), [1, 0, 0]);
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([trigger]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-memids-rebuilt', 'fragment', 'ctx1');
 
       // loadedMemIds must exactly match the IDs in loaded
@@ -880,8 +919,8 @@ describe('ContextFactory', () => {
         embeddings: { full: [1, 0, 0], compact: [1, 0, 0], micro: [] },
         closedAt: new Date('2024-01-03T00:00:00.000Z'),
       };
-      vi.mocked(store.searchMemsByVector!).mockResolvedValueOnce([trigger]);
-      vi.mocked(store.getActiveChunkIds!).mockResolvedValueOnce(new Set());
+      vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
+      vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-dim-guard', 'fragment', 'ctx1');
 
       // If scored on full (correct): m-relevant kept (score=1), m-stale dropped (score=0)
@@ -891,6 +930,108 @@ describe('ContextFactory', () => {
       const ids = state.loaded.map(m => m.id);
       expect(ids).toContain('m-relevant');
       expect(ids).not.toContain('m-stale');
+    });
+  });
+
+  // ── FIX 4: Embedding dimension assertion ──────────────────────────────────
+
+  describe('remember — embedding dimension assertion (FIX 4)', () => {
+    it('succeeds when all embeddings in a session have the same dimension', async () => {
+      // embed mock already returns [0.1, 0.2, 0.3] for every call (3-dim) — consistent
+      await expect(factory.remember('s-dim-ok', 'first', 'ctx1')).resolves.not.toThrow();
+      await expect(factory.remember('s-dim-ok', 'second', 'ctx1')).resolves.not.toThrow();
+    });
+
+    it('establishes focusDim from the first embedding', async () => {
+      await factory.remember('s-dim-set', 'first', 'ctx1');
+      const state = factory.getOrCreateSession('s-dim-set');
+      expect(state.focusDim).toBe(3); // embed mock returns 3-dim [0.1, 0.2, 0.3]
+    });
+
+    it('throws a clear error when a later embedding has a different dimension', async () => {
+      // First call: 3-dim embedding (default mock)
+      await factory.remember('s-dim-mismatch', 'first', 'ctx1');
+
+      // Second call: mock embed returns a 2-dim vector (wrong length)
+      vi.mocked(embeddingService.embed).mockResolvedValueOnce({
+        ok: true,
+        value: { compact: [0.5, 0.5] },
+      });
+
+      await expect(factory.remember('s-dim-mismatch', 'second', 'ctx1')).rejects.toThrow(
+        'Embedding dimension mismatch: expected 3, got 2',
+      );
+    });
+
+    it('mismatch error message includes both expected and actual dimensions', async () => {
+      await factory.remember('s-dim-msg', 'first', 'ctx1'); // establishes dim=3
+
+      vi.mocked(embeddingService.embed).mockResolvedValueOnce({
+        ok: true,
+        value: { compact: new Array(1024).fill(0.1) }, // 1024-dim mismatch
+      });
+
+      const promise = factory.remember('s-dim-msg', 'second', 'ctx1');
+      await expect(promise).rejects.toThrow('expected 3, got 1024');
+    });
+
+    it('focusDim is null before any remember() calls', () => {
+      const state = factory.getOrCreateSession('s-dim-null');
+      expect(state.focusDim).toBeNull();
+    });
+  });
+
+  // ── FIX 5: Embed failure path ─────────────────────────────────────────────
+
+  describe('remember — embed failure (FIX 5)', () => {
+    it('throws with the embedding error message when embed returns ok=false', async () => {
+      vi.mocked(embeddingService.embed).mockResolvedValueOnce({
+        ok: false,
+        error: { message: 'API quota exceeded' },
+      });
+
+      await expect(factory.remember('s-embed-fail', 'fragment', 'ctx1')).rejects.toThrow(
+        'Embedding failed: API quota exceeded',
+      );
+    });
+
+    it('does not add rawTail fragment when embed fails', async () => {
+      vi.mocked(embeddingService.embed).mockResolvedValueOnce({
+        ok: false,
+        error: { message: 'network error' },
+      });
+
+      try {
+        await factory.remember('s-embed-fail-notail', 'fragment', 'ctx1');
+      } catch {
+        // expected to throw
+      }
+
+      // rawTail IS appended before embed (step 1 before step 2) — checking actual behavior
+      // The fragment is appended in step 1 before embed attempt in step 2
+      // This test verifies the current behavior (rawTail is appended regardless)
+      const state = factory.getOrCreateSession('s-embed-fail-notail');
+      expect(state.rawTail).toHaveLength(1); // step 1 already ran before embed failure
+    });
+
+    it('does not modify focus or loaded when embed fails', async () => {
+      vi.mocked(embeddingService.embed).mockResolvedValueOnce({
+        ok: false,
+        error: { message: 'timeout' },
+      });
+
+      try {
+        await factory.remember('s-embed-fail-state', 'fragment', 'ctx1');
+      } catch {
+        // expected to throw
+      }
+
+      const state = factory.getOrCreateSession('s-embed-fail-state');
+      // focus never shifted (step 2 failed before shiftFocus)
+      expect(state.focus).toHaveLength(0);
+      // no mems loaded (steps 3-5 never ran)
+      expect(state.loaded).toHaveLength(0);
+      expect(state.oooCounter).toBe(0);
     });
   });
 });

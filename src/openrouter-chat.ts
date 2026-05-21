@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ok, err } from './shared/result.js';
 import type { Result } from './shared/result.js';
-import type { RecallNode, MessageEntry, MemChunk, RecallResult, IMemStore, VocabularyTerm } from './types.js';
+import type { RecallNode, MessageEntry, MemChunk, RecallResult, IMemStore, VocabularyTerm, IEmbeddingService } from './types.js';
 import { retrySleep } from './retry-sleep.js';
 
 // ============================================================
@@ -65,15 +65,9 @@ export interface IPrecontextLoader {
   loadPrecontext(contextId: string): Promise<Result<PrecontextData, { message: string }>>;
 }
 
-/** Embedding result */
-interface EmbeddingValue {
-  compact: number[];
-}
-
-/** Embedding service (optional dep) */
-export interface IEmbeddingService {
-  embed(text: string): Promise<Result<EmbeddingValue, { message: string }>>;
-}
+// IEmbeddingService and EmbeddingValue are now in types.ts (port layer).
+// Re-export for backward compatibility with callers that imported them from here.
+export type { IEmbeddingService, EmbeddingValue } from './types.js';
 import { MemManager, InMemoryMemStore } from './services/mem-manager.js';
 import { createMemoryLogger } from './logging.js';
 
