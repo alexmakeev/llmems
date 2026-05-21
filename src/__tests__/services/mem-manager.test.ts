@@ -260,31 +260,6 @@ describe('MemManager + InMemoryMemStore', () => {
     });
   });
 
-  // ── behaviorInstructions ────────────────────────────────────────────
-
-  describe('behaviorInstructions', () => {
-    it('defaults to empty string', async () => {
-      expect(await store.getBehaviorInstructions(ctx)).toBe('');
-    });
-
-    it('set and get round-trip', async () => {
-      await store.setBehaviorInstructions('Be friendly and concise', ctx);
-      expect(await store.getBehaviorInstructions(ctx)).toBe('Be friendly and concise');
-    });
-
-    it('overwriting replaces previous instructions', async () => {
-      await store.setBehaviorInstructions('First instruction', ctx);
-      await store.setBehaviorInstructions('Second instruction', ctx);
-      expect(await store.getBehaviorInstructions(ctx)).toBe('Second instruction');
-    });
-
-    it('setting empty string clears instructions', async () => {
-      await store.setBehaviorInstructions('Some instructions', ctx);
-      await store.setBehaviorInstructions('', ctx);
-      expect(await store.getBehaviorInstructions(ctx)).toBe('');
-    });
-  });
-
   // ── applyBackgroundResult with overlap ───────────────────────────────
 
   describe('applyBackgroundResult with overlap', () => {

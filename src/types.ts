@@ -51,16 +51,6 @@ export interface RecallResult {
   edges: RecallEdge[];
 }
 
-/**
- * A single message entry in a conversation session.
- * Defined here to avoid a runtime dependency on the session module.
- */
-export interface MessageEntry {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp?: string;
-}
-
 // ── Mem Management Types ──────────────────────────────────────────
 
 /**
@@ -119,8 +109,6 @@ export interface IMemStore {
   updateGeneralSummary(summary: string, contextId: string): Promise<void>;
   removeOldestClosedMem(contextId: string): Promise<void>;
   getLastClosedMem(contextId: string): Promise<Mem | null>;
-  getBehaviorInstructions?(contextId: string): Promise<string>;
-  setBehaviorInstructions?(instructions: string, contextId: string): Promise<void>;
   getEstablishedVocabulary?(contextId: string, minCount?: number): Promise<VocabularyTerm[]>;
   getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
   /**

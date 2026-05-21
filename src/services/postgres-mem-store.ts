@@ -198,23 +198,10 @@ export class PostgresMemStore implements IMemStore {
     );
   }
 
-  async getBehaviorInstructions(contextId: string): Promise<string> {
-    const result = await this.pool.query<{ behavior_instructions: string }>(
-      `SELECT behavior_instructions FROM memstores WHERE name = $1`,
-      [contextId],
-    );
-
-    return result.rows[0]?.behavior_instructions ?? '';
-  }
-
-  async setBehaviorInstructions(instructions: string, contextId: string): Promise<void> {
-    await this.resolveMemstoreId(contextId); // ensure row exists
-
-    await this.pool.query(
-      `UPDATE memstores SET behavior_instructions = $1 WHERE name = $2`,
-      [instructions, contextId],
-    );
-  }
+  // NOTE: The `behavior_instructions` column in `memstores` is vestigial/legacy.
+  // It was used by the chat layer (OpenRouterChat) which was removed in v0.4.0.
+  // The column is intentionally left in the DB schema to avoid a destructive migration.
+  // Do NOT read/write this column from llmems — it is unused by the abstract core.
 
   async removeOldestClosedMem(contextId: string): Promise<void> {
     const memstoreId = await this.resolveMemstoreId(contextId);

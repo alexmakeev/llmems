@@ -19,7 +19,6 @@ export class InMemoryMemStore implements IMemStore {
   private activeChunks: MemChunk[] = [];
   private closedMems: Mem[] = [];
   private generalSummary: string = '';
-  private behaviorInstructions: string = '';
   private vocabularyIndex = new Map<string, { term: string; count: number; memIds: Set<string> }>();
 
   async getActiveChunks(_contextId: string): Promise<MemChunk[]> {
@@ -46,14 +45,6 @@ export class InMemoryMemStore implements IMemStore {
 
   async updateGeneralSummary(summary: string, _contextId: string): Promise<void> {
     this.generalSummary = summary;
-  }
-
-  async getBehaviorInstructions(_contextId: string): Promise<string> {
-    return this.behaviorInstructions;
-  }
-
-  async setBehaviorInstructions(instructions: string, _contextId: string): Promise<void> {
-    this.behaviorInstructions = instructions;
   }
 
   /**

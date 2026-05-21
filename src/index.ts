@@ -15,6 +15,7 @@ export type {
   MemContextData,
   RecallNode,
   RecallEdge,
+  RecallResult,
   VocabularyTerm,
   IEmbeddingService,
   EmbeddingValue,
@@ -43,19 +44,14 @@ export { LLMSummarizer } from './services/llm-summarizer.js';
 export type { LLMSummarizerConfig } from './services/llm-summarizer.js';
 
 // ============================================================
-// OpenRouterChat (chat wrapper with memory + LLM inference)
+// Context quality metric (pure, deterministic, no IO)
 // ============================================================
-export { OpenRouterChat } from './openrouter-chat.js';
+export { computeContextQualityScore, computeFocusRelevance, computeDedupCorrectness, computeChronologyIntegrity } from './services/context-metric.js';
 export type {
-  OpenRouterChatOptions,
-  ChatResponse,
-  ToolDefinition,
-  ChatResponseWithTools,
-  LLMem,
-  StoreResult,
-  MemoryError,
-  RecallMemoryResult,
-} from './openrouter-chat.js';
+  ContextQualityScore,
+  ContextQualityInputs,
+  ProvenanceMem,
+} from './services/context-metric.js';
 
 // ============================================================
 // Result type utilities
