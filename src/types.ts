@@ -89,7 +89,7 @@ export interface EmbeddingValue {
 
 /**
  * Port: Embedding Service — generates embedding vectors for text.
- * Used by ContextFactory (focus shift) and OpenRouterChat (topic embeddings).
+ * Used by ContextFactory (focus shift) and BackgroundIndexer (topic embeddings).
  */
 export interface IEmbeddingService {
   embed(text: string): Promise<import('./shared/result.js').Result<EmbeddingValue, { message: string }>>;

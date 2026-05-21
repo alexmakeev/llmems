@@ -8,7 +8,7 @@
 // Does NOT own chat generation, debug logging, or retry state.
 //
 // Consumers: BackgroundIndexer (via ILLMSummarizer port).
-// Used by: OpenRouterChat (delegates callOpenRouterForSummarizer), ContextFactory (directly).
+// Used by: ContextFactory (directly). OpenRouterChat removed in v0.4.0.
 
 import { z } from 'zod';
 import type { ILLMSummarizer } from './background-indexer.js';

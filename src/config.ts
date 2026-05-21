@@ -52,7 +52,7 @@ export const memoryModuleConfigSchema = z.object({
   useEntityNodes: z.boolean().default(true),
 
   /**
-   * Mem store backend for OpenRouterChat.
+   * Mem store backend for the memory module.
    * - 'memory' (default): InMemoryMemStore — mems live only in process memory
    * - 'postgres': PostgresMemStore — mems persisted in PostgreSQL
    *

@@ -6,7 +6,11 @@
 
 ## Где мы сейчас
 
-Ветка `feature/context-factory`. **Epic `llmems-flf` Stage 1 завершён.**
+Ветка `feature/context-factory`. **Библиотека — чистая абстрактная память (v0.4.0).**
+
+`OpenRouterChat` удалён из библиотеки в рамках epic `llmems-e0b`. Весь чат-слой перенесён в altme-bot (ветка `absorb-chat`). Stages A–C закрыты. Stage D (docs + final review) — текущий.
+
+Epic `llmems-flf` Stage 1 завершён.
 
 ### Фаза 1 baseline context factory (закрыта, epic `vp3`)
 
@@ -28,7 +32,7 @@
 - **flf.4** — Session/theme vector = normalize(mean(last N=100 mems embeddings.full)); пересчитывается после каждого запуска индексера; кэшируется в per-session state.
 - **drc** — rawTail drain при reconciliation: raw-чанки заменяются mem-ом после индексации (bead был в Phase-1 known gaps).
 
-Тесты: **212/212 green**. `tsc` — чисто.
+Тесты: **222/222 green** (после abstract-cleanup). `tsc` — чисто.
 
 ---
 
@@ -53,6 +57,13 @@
 
 ## Активные биды
 
+### P1 — Epic abstract-cleanup (llmems-e0b)
+
+| ID | Описание | Статус |
+|----|----------|--------|
+| llmems-e0b | Abstract-cleanup EPIC (чат → altme-bot) | open |
+| llmems-e0b.4 | Stage D: docs + final review (текущий) | in_progress |
+
 ### P1 — Epic flf (открыт, Stage 2 gated)
 
 | ID | Описание | Статус |
@@ -66,7 +77,6 @@
 | ID | Описание | Статус |
 |----|----------|--------|
 | 991 | Слоёнка layer 2/3: provenance split | open |
-| tda | Remove old context path (Path A cleanup) | open |
 | e08 | Session lifecycle (TTL/LRU/eviction) | open |
 | xcz | Phase 2 — Structure + graph dosborka | open |
 | xcz.1 | Mem typing (event/period, ts vs event-time) | open |
@@ -85,6 +95,7 @@
 | sbg | Cleanup stale gitea remote |
 | bgy | Experiment: сравнение embedding моделей |
 | 76f | Redesign graphEnrichedRecall scoring |
+| 13y | Stabilize timer/retry-based tests (flaky timing) |
 
 ### Backlog
 
@@ -102,9 +113,12 @@
 |------|------|
 | `src/services/context-factory.ts` | Основная реализация ContextFactory |
 | `src/services/background-indexer.ts` | Standalone BackgroundIndexer (raw→mem→archive) |
+| `src/services/llm-summarizer.ts` | Конкретная реализация ILLMSummarizer (OpenAI-compatible) |
 | `src/services/postgres-mem-store.ts` | PostgreSQL-реализация IVectorMemStore |
 | `src/services/context-metric.ts` | Метрика качества контекста |
 | `src/types.ts` | Доменные типы (Mem, EmbeddingValue, IVectorMemStore, …) |
+| `src/index.ts` | Публичный barrel-экспорт библиотеки |
 | `docs/vision.md` | Архитектурное видение (north-star) |
+| `docs/building-a-chat.md` | Паттерн потребителя: чат поверх llmems |
 | `docs/baseline-metric.md` | Методика и результат замера baseline |
 | `sandboxes/schema-native.sql` | DDL схемы БД (pgvector HNSW) |

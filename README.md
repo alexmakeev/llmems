@@ -1,210 +1,187 @@
 # @alexmakeev/llmems
 
-Long-term memory for LLM agents. Conversations are broken into chunks, chunks are summarized into atomic "mems" in the background, mems are stored with embeddings. The LLM always sees layered context: general summary + recent topic summaries + semantic recall + current conversation.
+Long-term memory for LLM agents. Feed it fragments (conversation turns, file contents, anything) and it remembers. Building a chat or agent on top is the consumer's job — the library handles only the memory.
 
 ## What is this
 
-Most LLM chat wrappers either stuff the entire conversation history into the context (expensive, hits limits quickly) or forget everything between sessions (useless for long-term agents).
+Most LLM agents either stuff the entire history into the context window (expensive, hits limits fast) or forget everything between sessions.
 
 `llmems` takes a Zettelkasten-inspired approach:
 
-- Every message is a **chunk** — a raw conversation fragment
-- Background summarization groups related chunks into **mems** — atomic topic units with a 1-2 sentence summary
-- Mems get **embeddings** (Matryoshka: 1024/256/64 dims) for semantic search
-- On each new message, relevant mems are **recalled** and injected into context alongside recent conversation
+- Every fragment is a **chunk** — a raw input fragment (a dialogue turn, a document excerpt, anything text-based)
+- Background indexing groups related chunks into **mems** — atomic topic units with a 1-2 sentence summary and a vector embedding
+- On each `remember()` call the session's focus vector shifts, and new relevant mems are pulled from long-term storage into the session's working cache automatically
+- `getCurrentContext()` serializes the current cache (stable prefix + dynamic block + raw tail) into a single text block, ready to prepend to your LLM prompt
 
-The result: the LLM remembers everything important across arbitrarily long conversations, within a bounded context window.
+The result: the agent remembers everything important across arbitrarily long histories, within a bounded context window.
+
+> **What llmems is NOT:** a chat wrapper, a prompt builder, or a response generator. Those are consumer concerns. See [Building a chat on top of llmems](docs/building-a-chat.md) for a worked example.
 
 ## How it works
 
 ```
-User message
+fragment (user turn, file line, anything)
      │
      ▼
-┌────────────────────────────────────────────┐
-│              OpenRouterChat                │
-│                                            │
-│  1. Store message as chunk                 │
-│  2. Recall relevant mems (semantic search) │
-│  3. Build layered context:                 │
-│     ┌─────────────────────────────────┐    │
-│     │ System prompt                   │    │
-│     │ General summary (oldest mems)   │    │
-│     │ Recent topic summaries (N-2,N-1)│    │
-│     │ Recalled mems (semantic match)  │    │
-│     │ Last closed topic (N)           │    │
-│     │ Active chunks (current convo)   │    │
-│     └─────────────────────────────────┘    │
-│  4. Call LLM API (OpenRouter)              │
-│  5. Store response as chunk                │
-│  6. Schedule background summarization      │
-└────────────────────────────────────────────┘
-     │
-     ▼
-  LLM response
+  ContextFactory.remember(sessionId, fragment)
+     ├── store chunk as raw fragment (mem_chunk, active)
+     ├── shift session focus vector (EMA over recent embeddings)
+     └── load newly-relevant mems into session cache (ANN search, dedup)
+              ↕ background (count-based trigger, default 16 chunks)
+         BackgroundIndexer + ILLMSummarizer
+              raw chunks → closed mems (summary + embedding)
+              archived chunks removed from raw tail
 
-Background (after debounce, default 10 min):
-  Active chunks → LLM detects topic boundaries
-               → closed topics get summaries + embeddings
-               → active chunks trimmed to tail
-               → general summary updated
+     ▼
+  ContextFactory.getCurrentContext(sessionId)
+     ├── stable prefix  (already-cached mems, prompt-cache-friendly)
+     ├── "Loaded from memory:" marker
+     ├── dynamic block  (newly loaded mems, timestamped XML)
+     └── raw tail       (unindexed chunks, most recent last)
+     → single string ready to feed to your LLM
 ```
-
-**The Zettelkasten analogy:** each mem is like an atomic note card — one topic, a clear summary. When you ask something, the relevant cards are pulled from the archive and placed in front of the LLM, just like a researcher pulling relevant notes before writing.
 
 ### Vocabulary
 
-As mems are created, the LLM also extracts domain-specific terms (names, jargon, abbreviations) and stores them in a dedicated `vocabulary` table. On subsequent summarizations, the known terms list is injected into the LLM prompt so that spellings and capitalizations stay consistent across all mems.
+As mems are created, the LLM also extracts domain-specific terms (names, jargon, abbreviations) and stores them in a `vocabulary` table. On subsequent indexing runs the known terms list is injected into the summarization prompt so that spellings and capitalizations stay consistent across all mems.
 
-- **Extraction during summarization** — terms are collected per-topic as background summarization runs
-- **Case-insensitive deduplication** — stored with a `LOWER` unique index; the canonical form is preserved on first occurrence
-- **Voice-aware** — content transcribed from voice is not used to create new terms, only to match against existing ones (avoiding transcription noise polluting the vocabulary)
-- **`mem_vocabulary` join table** — links each mem to the terms it contains, with a `count_in_mem` field
-- **`getEstablishedVocabulary(minCount?)`** — returns terms that appear in at least `minCount` mems (default 3); useful for surfacing stable, recurring domain terminology
-- **`getVocabulary()`** — returns all known terms regardless of frequency
-- **`VocabularyTerm` type** — exported from the library for use in consuming code
-
-> **Not a chat history.** `llmems` does not store raw conversation logs and replay them. It compacts conversations into structured, summarized memories — preserving facts while using a fraction of the tokens that verbatim history would require.
-
-## Memory in practice
-
-### How memory works
-
-The system operates transparently during conversation pauses:
-
-1. **Conversation flows normally** — user talks to the bot, bot responds
-2. **Background compaction** — when there's a pause (default: 10 min of silence), the system automatically summarizes the conversation into atomic mems. Each mem is 1-2 sentences capturing key facts
-3. **Growing context** — mems accumulate over time. On each new message, the last 500 mems are included in the prompt alongside semantically recalled mems, giving the bot a rich history
-4. **User doesn't notice** — compaction happens in the background; the experience is seamless
-
-### Token economics
-
-- Each mem ≈ 15–26 tokens (depending on language)
-- 500 mems ≈ 8–13k tokens — fits comfortably in modern context windows
-- 500 mems represents roughly a week of intensive daily conversations
-- Each context ID (mem store) has its own independent history, so multiple topics can each hold 500 mems independently
-
-### Beyond 500 mems
-
-When a conversation accumulates more than 500 mems, older ones are no longer included in the context window. The system continues to work — it just loses the oldest memories. We're working on infinite memory through hierarchical summarization.
-
-Current best practice: keep separate context IDs for separate topics, so each stays well under the limit.
-
-### Configuring the mem limit
-
-```bash
-# Default: 500
-export LLMEMS_MAX_MEMS=500
-```
-
-Or set it per instance via the mem store — 500 is the default used by `PostgresMemStore.getClosedMems()`.
+- **Extraction during indexing** — terms collected per-topic by `BackgroundIndexer`
+- **Case-insensitive deduplication** — stored with a `LOWER` unique index; canonical form preserved on first occurrence
+- **`getEstablishedVocabulary(minCount?)`** — returns terms appearing in at least `minCount` mems (default 3)
+- **`getVocabulary()`** — all terms regardless of frequency
+- **`VocabularyTerm`** — exported from the library for use in consuming code
 
 ## Quick Start
 
 ### Installation
 
 ```bash
-# Add the GitHub Packages registry for this scope
 echo "@alexmakeev:registry=https://npm.pkg.github.com" >> .npmrc
-
 npm install @alexmakeev/llmems
 ```
 
 ### Minimal example (in-memory, no persistence)
 
 ```typescript
-import { OpenRouterChat, InMemoryMemStore } from '@alexmakeev/llmems';
+import {
+  ContextFactory,
+  BackgroundIndexer,
+  LLMSummarizer,
+  InMemoryMemStore,
+} from '@alexmakeev/llmems';
 
-// Minimal LLMem — no vector search, topic context only
-const llmem = {
-  contextId: 'my-chat',
-  async store() { return { ok: true as const, value: { stored: true as const } }; },
-  async recall() { return { ok: true as const, value: { recall: { nodes: [], edges: [] } } }; },
-};
-
-const chat = new OpenRouterChat({
+// Wire up the summarizer (any OpenAI-compatible endpoint)
+const summarizer = new LLMSummarizer({
   apiKey: process.env.OPENROUTER_API_KEY!,
-  systemPrompt: 'You are a helpful assistant.',
-  llmem,
-  memStore: new InMemoryMemStore(),
-  model: 'google/gemini-2.5-flash', // default
+  model: 'google/gemini-2.5-flash',
 });
 
-const result = await chat.prompt('Tell me about Paris.');
-if (result.ok) {
-  console.log(result.value.text);
-}
+const memStore = new InMemoryMemStore();
+const indexer = new BackgroundIndexer(summarizer, memStore);
+
+// IEmbeddingService — implement with your preferred embedding API
+const embeddingService = {
+  async embed(text: string) {
+    // call your embedding API and return Result<EmbeddingValue, ...>
+    throw new Error('implement me');
+  },
+};
+
+const factory = new ContextFactory({
+  embeddingService,
+  indexer,
+  memStore,
+});
+
+// Feed a fragment (conversation turn, document excerpt, etc.)
+await factory.remember('session-1', 'User: Tell me about Paris.');
+
+// Get context to prepend to your LLM prompt
+const context = await factory.getCurrentContext('session-1');
+// → "Loaded from memory:\n...\n\nUser: Tell me about Paris."
+
+// Call your own LLM here with `context` prepended to your messages
 ```
 
 ### With PostgreSQL persistence
 
 ```typescript
-import { OpenRouterChat, PostgresMemStore } from '@alexmakeev/llmems';
+import {
+  ContextFactory,
+  BackgroundIndexer,
+  LLMSummarizer,
+  PostgresMemStore,
+} from '@alexmakeev/llmems';
 
 const memStore = new PostgresMemStore(process.env.POSTGRES_URL!);
+const summarizer = new LLMSummarizer({ apiKey: process.env.OPENROUTER_API_KEY! });
+const indexer = new BackgroundIndexer(summarizer, memStore);
 
-const llmem = {
-  contextId: 'user-123',
-  async store() { return { ok: true as const, value: { stored: true as const } }; },
-  async recall() { return { ok: true as const, value: { recall: { nodes: [], edges: [] } } }; },
-};
+const factory = new ContextFactory({ embeddingService, indexer, memStore });
 
-const chat = new OpenRouterChat({
-  apiKey: process.env.OPENROUTER_API_KEY!,
-  systemPrompt: 'You are a helpful assistant.',
-  llmem,
-  memStore,
-});
+// Persist across restarts — same sessionId picks up where it left off
+await factory.remember('user-123', 'My name is Alice.');
+const context = await factory.getCurrentContext('user-123');
+// context includes all mems accumulated across previous process runs
 
-// Conversation persists across restarts
-const result = await chat.prompt('My name is Alice.');
-if (result.ok) {
-  console.log(result.value.text);
-}
-
-// On app shutdown
-await memStore.close();
+await memStore.close(); // drain connection pool on shutdown
 ```
+
+See [docs/building-a-chat.md](docs/building-a-chat.md) for the full consumer pattern that builds a chat on top of this.
 
 ## API Reference
 
-### `OpenRouterChat`
+### `ContextFactory`
 
-Main entry point. Wraps an LLM call with memory context.
+Main entry point. Manages per-session focus vectors, mem caches, and context assembly.
 
-**Constructor** (`OpenRouterChatOptions`):
+**Constructor** (`ContextFactoryConfig`):
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `apiKey` | `string` | yes | OpenRouter API key |
-| `systemPrompt` | `string` | yes | Your system prompt (appended after base prompt) |
-| `llmem` | `LLMem` | yes | Memory backend (store + recall interface) |
-| `model` | `string` | no | Model name, default `google/gemini-2.5-flash` |
-| `memStore` | `IMemStore` | no | Chunk/mem storage, default `InMemoryMemStore` |
-| `embeddingService` | `IEmbeddingService` | no | Generates embeddings for closed mems |
-| `backgroundDebounceMs` | `number` | no | Delay before background summarization, default `600000` (10 min) |
-| `debugLog` | `boolean` | no | Log all LLM calls to JSONL file |
-| `debugLogPath` | `string` | no | Path to debug log, default `logs/llm-calls.jsonl` |
-| `responseFormat` | `{ schema: ZodSchema, systemInstructions?: string }` | no | Structured JSON output |
-| `getBehaviorInstructions` | `() => Promise<string>` | no | Dynamic instructions injected into context per message |
+| `embeddingService` | `IEmbeddingService` | yes | Generates embeddings for focus shifts and mem loading |
+| `indexer` | `BackgroundIndexer` | yes | Converts raw chunks into closed mems in the background |
+| `memStore` | `IMemStore` | yes | Storage backend for chunks and mems |
+| `recalledMemoryMarker` | `string` | no | Label injected before the dynamic mem block (default: `"Loaded from memory:"`) |
+| `rebuildThreshold` | `number` | no | How many out-of-order mems trigger a soft cache rebuild (default: `30`) |
 
 **Methods:**
 
-- `prompt(message, options?)` — send a message, get a response. Stores both sides in memory and schedules background summarization. Returns `Result<ChatResponse, MemoryError>`.
-- `ask(question)` — read-only query. Uses memory context but does NOT store messages or modify state. Returns `Promise<string>`.
-- `dryRun(message)` — full prompt cycle with no state changes. Returns `DryRunResult` showing what the LLM saw (context layers, recall nodes, active chunks).
-- `promptWithTools(message, tools, options?)` — send a message with tool definitions. Returns `Result<ChatResponseWithTools, MemoryError>`.
-- `getTopicStats()` — returns current memory state: closed topic count, active chunk count, general summary.
-- `storeAssistantMessage(text)` — manually store an assistant message (use when handling tool calls externally).
-- `buildContext(messages, recallNodes)` — format recalled nodes into text (exposed for custom chat loops).
+- `remember(sessionId, fragment)` — store a fragment, shift session focus, load newly-relevant mems into cache. Returns `Promise<void>`.
+- `getCurrentContext(sessionId)` — serialize the current session cache into a single string ready for prepending to your LLM prompt. Returns `Promise<string>`.
+- `getOrCreateSession(sessionId)` — return (or create) the in-memory per-session state (`SessionWorkingState`). Useful for inspection.
+
+### `BackgroundIndexer`
+
+Converts accumulated raw chunks into closed mems (summaries + embeddings). Triggered count-based (default: every 16 active chunks). Used internally by `ContextFactory`.
+
+**Constructor:**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `summarizer` | `ILLMSummarizer` | yes | LLM that segments chunks into topic mems |
+| `memStore` | `IMemStore` | yes | Storage backend |
+| `indexThreshold` | `number` | no | Active-chunk count that triggers indexing (default: `16`) |
+
+### `LLMSummarizer`
+
+Concrete `ILLMSummarizer` implementation using any OpenAI-compatible chat completions endpoint.
+
+**Constructor** (`LLMSummarizerConfig`):
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `apiKey` | `string` | yes | API key |
+| `baseUrl` | `string` | no | API base URL, default OpenRouter (`https://openrouter.ai/api/v1`) |
+| `model` | `string` | no | Model name, default `google/gemini-2.5-flash` |
 
 ### `MemManager`
 
-Orchestrates the chunk/mem lifecycle. Used internally by `OpenRouterChat`; rarely needed directly.
+Orchestrates the chunk/mem lifecycle inside a mem store. Used internally; rarely needed directly.
 
 - `addChunk(content, timestamp, contextId)` — add a raw conversation chunk
 - `getContextData(contextId)` — returns `MemContextData` for building LLM context
-- `applyBackgroundResult(mems, tailChunkIds, newGeneralSummary, contextId)` — commit a background summarization result
+- `applyBackgroundResult(mems, tailChunkIds, newGeneralSummary, contextId)` — commit a background indexing result
 - `getClosedMemCount(contextId)`, `getAllClosedMems(contextId)`, `getLastClosedMem(contextId)` — introspection
 
 ### `PostgresMemStore`
@@ -213,14 +190,13 @@ PostgreSQL + pgvector storage for chunks and mems. Persists state across process
 
 ```typescript
 const store = new PostgresMemStore('postgresql://user:pass@localhost:5432/mydb');
-// use with OpenRouterChat via memStore option
 await store.close(); // drain connection pool on shutdown
 ```
 
-**Vocabulary methods** (available on `PostgresMemStore`):
+**Vocabulary methods:**
 
-- `getEstablishedVocabulary(minCount?)` — returns `VocabularyTerm[]` for terms that appear in at least `minCount` mems (default 3). Use to surface stable, recurring domain terminology.
-- `getVocabulary()` — returns all `VocabularyTerm[]` regardless of frequency.
+- `getEstablishedVocabulary(minCount?)` — returns `VocabularyTerm[]` for terms that appear in at least `minCount` mems (default 3)
+- `getVocabulary()` — returns all `VocabularyTerm[]` regardless of frequency
 
 ```typescript
 import { PostgresMemStore, VocabularyTerm } from '@alexmakeev/llmems';
@@ -234,14 +210,10 @@ const terms: VocabularyTerm[] = await store.getEstablishedVocabulary(5);
 
 In-process storage — no dependencies, no persistence. Suitable for testing and short-lived sessions.
 
-```typescript
-const store = new InMemoryMemStore();
-```
-
 ### Key interfaces
 
 ```typescript
-// Storage backend — implement to use a custom store
+// Storage backend — implement for a custom store
 interface IMemStore {
   addChunk(content: string, timestamp: Date, contextId: string): Promise<MemChunk>;
   getActiveChunks(contextId: string): Promise<MemChunk[]>;
@@ -255,88 +227,100 @@ interface IMemStore {
     newGeneralSummary: string | null,
     contextId: string,
   ): Promise<void>;
-  // optional:
-  getBehaviorInstructions?(contextId: string): Promise<string>;
-  setBehaviorInstructions?(instructions: string, contextId: string): Promise<void>;
 }
 
-// A raw conversation fragment
+// Embedding service — implement with your preferred embedding API
+interface IEmbeddingService {
+  embed(text: string): Promise<Result<EmbeddingValue, { message: string }>>;
+}
+
+// A raw conversation fragment (unindexed)
 interface MemChunk { id: string; content: string; timestamp: Date; }
 
-// A closed (summarized) topic unit
+// A closed (summarized + embedded) topic unit
 interface Mem {
   id: string;
   summary: string;
   chunkIds: string[];
-  embeddings: { full: number[]; compact: number[]; micro: number[] }; // 1024/256/64 dims
+  embeddings: { full: number[]; compact: number[]; micro: number[] };
   closedAt: Date;
 }
 
-// Context assembled for the LLM
+// Context assembled from the mem store for building LLM context
 interface MemContextData {
   generalSummary: string;
   recentClosedMems: Mem[];
   lastClosedMem: Mem | null;
   activeChunks: MemChunk[];
 }
+```
 
-// Memory backend used by OpenRouterChat
-interface LLMem {
-  contextId: string;
-  store(text: string, metadata?: { sessionId?: string }): Promise<Result<StoreResult, MemoryError>>;
-  recall(query: string): Promise<Result<RecallMemoryResult, MemoryError>>;
+### `ILLMSummarizer` port
+
+Implement this to plug in a custom LLM backend for background indexing:
+
+```typescript
+interface ILLMSummarizer {
+  summarize(systemPrompt: string, detectionPrompt: string): Promise<SummarizationResult | null>;
 }
+```
+
+`LLMSummarizer` is the built-in implementation for OpenAI-compatible APIs.
+
+### Context quality metric
+
+Pure, deterministic scoring — no IO. Useful for evaluating how well the assembled context matches the current session focus.
+
+```typescript
+import { computeContextQualityScore } from '@alexmakeev/llmems';
+
+const score = computeContextQualityScore({
+  focusVector: session.focusVector,
+  loadedMems: session.loadedMems,
+  rawTail: session.rawTail,
+  // ...
+});
+// score.composite — 0.0 to 1.0 composite quality
+// score.focusRelevance, score.dedupCorrectness, score.chronologyIntegrity
 ```
 
 ### `memoryModuleConfigSchema`
 
-Zod schema for the full memory module config (embedding + LLM extractors + mem store backend). Use when building a pipeline with vector search.
+Zod schema for the full memory module config (embedding + LLM + mem store backend). Use when wiring up the full pipeline with vector search.
 
 ```typescript
 import { memoryModuleConfigSchema } from '@alexmakeev/llmems';
 
 const config = memoryModuleConfigSchema.parse({
-  embedding: { apiKey: '...', model: 'qwen/qwen3-embedding-8b' },
+  embedding: { apiKey: '...', model: 'openai/text-embedding-3-small' },
   llmExtractor: { apiKey: '...' },
   graphExtractor: { apiKey: '...' },
   memStore: { type: 'postgres', postgres: { connectionString: '...' } },
 });
 ```
 
-Key fields: `embedding.model` (default `qwen/qwen3-embedding-8b`), `memStore.type` (`'memory'` | `'postgres'`), `useEntityNodes` (toggle entity-based recall, default `true`).
+Key fields: `embedding.model` (default `openai/text-embedding-3-small`), `memStore.type` (`'memory'` | `'postgres'`).
 
 Environment variable shortcuts: `MEM_STORE_TYPE` and `POSTGRES_URL` are read automatically by the schema defaults.
 
-## Configuration
+## Token economics
 
-### Background summarization
+- Each mem ≈ 15–26 tokens (language-dependent)
+- Default mem limit: 500 per context ID
+- 500 mems ≈ 8–13k tokens — fits comfortably in modern context windows
+- 500 mems ≈ a week of intensive daily conversations
 
-Summarization runs in the background after `backgroundDebounceMs` milliseconds of silence (no new messages). Each call to `prompt()` resets the timer. The default is 10 minutes — tune it based on your conversation cadence:
+Beyond 500 mems the oldest are no longer included in context. Keep separate context IDs for separate topics to stay well under the limit.
 
-```typescript
-const chat = new OpenRouterChat({
-  // ...
-  backgroundDebounceMs: 30_000, // 30 seconds — aggressive, for short sessions
-});
-```
-
-### Debug logging
-
-Enable to capture every LLM call as a JSONL file for debugging:
-
-```typescript
-const chat = new OpenRouterChat({
-  // ...
-  debugLog: true,
-  debugLogPath: 'logs/llm-calls.jsonl',
-});
+```bash
+export LLMEMS_MAX_MEMS=500  # default
 ```
 
 ## Storage
 
 ### PostgreSQL schema
 
-`PostgresMemStore` requires the `pgvector` extension and three tables:
+`PostgresMemStore` requires the `pgvector` extension and these tables:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -367,22 +351,19 @@ CREATE TABLE IF NOT EXISTS mem_chunks (
   timestamp    TIMESTAMPTZ NOT NULL,
   status       TEXT NOT NULL DEFAULT 'active'
 );
-```
 
-Additional tables for vocabulary support:
-
-```sql
+-- Vocabulary support
 CREATE TABLE IF NOT EXISTS vocabulary (
-  id           SERIAL PRIMARY KEY,
-  term         TEXT NOT NULL,
-  term_lower   TEXT NOT NULL UNIQUE, -- case-insensitive dedup via LOWER index
+  id            SERIAL PRIMARY KEY,
+  term          TEXT NOT NULL,
+  term_lower    TEXT NOT NULL UNIQUE,
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS mem_vocabulary (
-  mem_id       INTEGER NOT NULL REFERENCES mems(id) ON DELETE CASCADE,
+  mem_id        INTEGER NOT NULL REFERENCES mems(id) ON DELETE CASCADE,
   vocabulary_id INTEGER NOT NULL REFERENCES vocabulary(id) ON DELETE CASCADE,
-  count_in_mem INTEGER NOT NULL DEFAULT 1,
+  count_in_mem  INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (mem_id, vocabulary_id)
 );
 ```
@@ -391,37 +372,25 @@ Connection string format: `postgresql://user:password@host:5432/database`
 
 `PostgresMemStore` creates `memstores` rows on demand (one per `contextId`). Table creation is your responsibility.
 
-## Supported Models
-
-Works with any OpenAI-compatible chat completions API:
-
-- **OpenRouter** (default) — access Gemini, Claude, GPT-4, Llama, and others via a single key at `https://openrouter.ai/api/v1`
-- **OpenAI directly** — set `model` to any OpenAI model name, provide your OpenAI key
-- **Local models** — Ollama, LM Studio, vLLM, or any server implementing the `/v1/chat/completions` endpoint
-
-Default model: `google/gemini-2.5-flash`
-
 ## Result type
 
 All fallible methods return `Result<T, E>` (from [neverthrow](https://github.com/supermacro/neverthrow)):
 
 ```typescript
-const result = await chat.prompt('Hello');
+const result = await embeddingService.embed('hello');
 if (result.ok) {
-  console.log(result.value.text);   // ChatResponse
+  console.log(result.value); // EmbeddingValue
 } else {
-  console.error(result.error.type, result.error.message); // MemoryError
+  console.error(result.error.message);
 }
 ```
-
-Error types: `'config'` | `'connection'` | `'extraction'` | `'storage'` | `'query'`
 
 ## Development
 
 ```bash
 npm install
 npm run build      # compile TypeScript → dist/
-npm test           # run tests with vitest (no external services required)
+npm test           # run all tests with vitest (no external services required)
 npm run test:watch
 ```
 

@@ -1,8 +1,8 @@
 // src/services/background-indexer.ts
 // BackgroundIndexer: standalone service that segments active chunks into closed mems.
 //
-// Extracted from OpenRouterChat.backgroundSummarize() — pure extraction, no behavior change.
-// OpenRouterChat delegates to this service; ContextFactory will use it directly (later steps).
+// Originally extracted from OpenRouterChat.backgroundSummarize() (removed in v0.4.0).
+// ContextFactory uses BackgroundIndexer directly; consumers wire up an ILLMSummarizer impl.
 
 import { createMemoryLogger } from '../logging.js';
 import type { MemChunk, IEmbeddingService, VocabularyTerm } from '../types.js';
@@ -16,8 +16,8 @@ import type { MemManager } from './mem-manager.js';
  * Port: LLM summarizer for background indexing.
  *
  * Wraps the LLM call that segments chunks into topics.
- * Implemented by OpenRouterChat (wrapping callOpenRouter + BACKGROUND_SUMMARIZATION_FORMAT).
  * Designed to be implemented by any LLM backend.
+ * See LLMSummarizer for the concrete OpenAI-compatible implementation.
  *
  * Returns null on failure — BackgroundIndexer handles fallback internally.
  */
@@ -161,7 +161,7 @@ export class BackgroundIndexer {
   /**
    * Build the system and detection prompts for the LLM summarizer.
    *
-   * Mirrors the prompt-building logic from OpenRouterChat.backgroundSummarize().
+   * Builds the system and detection prompts for the ILLMSummarizer call.
    */
   private async buildPrompts(
     chunks: MemChunk[],
