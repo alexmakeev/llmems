@@ -302,15 +302,15 @@ export class ContextFactory {
       // We do not silently skip: a bad focus vector leads to wrong mem retrieval.
       throw new Error(`Embedding failed: ${embedResult.error.message}`);
     }
-    // DIMENSION CONTRACT: IEmbeddingService.embed().compact is 1024-dim in production
+    // DIMENSION CONTRACT: IEmbeddingService.embed().compact is 1536-dim in production
     // (the field name "compact" is a historical artefact from an earlier multi-resolution
-    // embedding design). This 1024-dim vector becomes session.focus and is compared
-    // in softRebuild() against mem.embeddings.full (also 1024-dim, from mems.embedding
+    // embedding design). This 1536-dim vector becomes session.focus and is compared
+    // in softRebuild() against mem.embeddings.full (also 1536-dim, from mems.embedding
     // DB column). Do NOT substitute a smaller embedding here — dimension must match.
     // Rename cleanup is deferred to bead llmems-fqx.
     //
     // DIMENSION ASSERTION: fail fast on mismatch rather than silently corrupting focus.
-    // A 1024-vs-256 mismatch would produce a focus vector on the wrong hypersphere,
+    // A dimension mismatch would produce a focus vector on the wrong hypersphere,
     // leading to incorrect cosine similarity results in searchMemsByVector and softRebuild.
     const embeddingVector = embedResult.value.compact;
     if (session.focusDim === null) {
@@ -362,13 +362,12 @@ export class ContextFactory {
    *
    * Called when oooCounter reaches config.rebuildThreshold. Steps:
    *   1. Score all loaded mems by cosine similarity to current focus
-   *      (using mem.embeddings.full — 1024-dim, same as session.focus).
+   *      (using mem.embeddings.full — 1536-dim, same as session.focus).
    *      DIMENSION CONTRACT: session.focus is seeded from
-   *      IEmbeddingService.embed().compact which is 1024-dim in production
+   *      IEmbeddingService.embed().compact which is 1536-dim in production
    *      (the field name "compact" is a historical artefact).
-   *      mem.embeddings.full maps from the DB column mems.embedding (also 1024-dim),
+   *      mem.embeddings.full maps from the DB column mems.embedding (also 1536-dim),
    *      which is the same column searchMemsByVector queries on.
-   *      mem.embeddings.compact (256-dim, truncated) must NOT be used here.
    *   2. Keep the top ceil(loaded.length * config.keepRatio) mems by score;
    *      drop the rest (stale / lowest relevance to current focus).
    *   3. Sort survivors chronologically by closedAt ascending.
@@ -390,13 +389,11 @@ export class ContextFactory {
 
     // Score each mem by cosine similarity to current focus.
     // DIMENSION CONTRACT: session.focus is seeded from IEmbeddingService.embed().compact
-    // which in production is 1024-dim (despite the field name "compact" — naming artefact).
-    // mems.embedding (DB column) is also 1024-dim and maps to mem.embeddings.full.
-    // searchMemsByVector queries on mems.embedding (1024-dim), so focus and full are
+    // which in production is 1536-dim (despite the field name "compact" — naming artefact).
+    // mems.embedding (DB column) is also 1536-dim and maps to mem.embeddings.full.
+    // searchMemsByVector queries on mems.embedding (1536-dim), so focus and full are
     // always the same dimension. We compare against mem.embeddings.full to maintain
-    // this consistency. mem.embeddings.compact (256-dim, truncated) must NOT be used
-    // here — it would be a dimension mismatch against the 1024-dim focus vector.
-    // For mems with no embedding data (empty array), score is 0 (treated as stale).
+    // this consistency. For mems with no embedding data (empty array), score is 0 (treated as stale).
     const scored = session.loaded.map(mem => ({
       mem,
       score: cosineSimilarity(

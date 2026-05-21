@@ -99,7 +99,7 @@ export class InMemoryMemStore implements IMemStore {
    * If newGeneralSummary !== null → update generalSummary.
    */
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[] }; vocabulary?: { term: string; count: number }[] }[],
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     _contextId: string,
@@ -181,7 +181,7 @@ export class MemManager {
   }
 
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[] }; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,

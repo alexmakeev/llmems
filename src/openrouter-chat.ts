@@ -119,7 +119,7 @@ export interface OpenRouterChatOptions {
   precontextLoader?: IPrecontextLoader;
   /** Mem store implementation — if not provided, uses InMemoryMemStore */
   memStore?: IMemStore;
-  /** Embedding service — used to generate Matryoshka embeddings for closed mems */
+  /** Embedding service — used to generate embeddings for closed mems */
   embeddingService?: IEmbeddingService;
   /** Enable debug logging of every LLM call to a JSONL file */
   debugLog?: boolean;
@@ -224,15 +224,13 @@ const BackgroundSummarizationSchema = z.object({
   tailChunkIds: z.array(z.string()),
 });
 
-/** Matryoshka embedding set for a closed topic */
+/** Embedding set for a closed topic */
 type TopicEmbeddings = {
-  full: number[];    // 1024 dims
-  compact: number[]; // 256 dims
-  micro: number[];   // 64 dims
+  full: number[];    // 1536 dims
 };
 
 /** Empty embeddings fallback when embedding service is unavailable */
-const EMPTY_EMBEDDINGS: TopicEmbeddings = { full: [], compact: [], micro: [] };
+const EMPTY_EMBEDDINGS: TopicEmbeddings = { full: [] };
 
 /** Background summarization result type */
 type BackgroundResult = {
@@ -988,7 +986,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     //   }
     // }
 
-    // Generate Matryoshka embeddings for each topic
+    // Generate embeddings for each topic
     const topicsWithEmbeddings = await Promise.all(
       topics.map(async (topic) => {
         const embeddings = await this.generateTopicEmbeddings(topic.summary);
@@ -1000,7 +998,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
   }
 
   /**
-   * Generate Matryoshka embeddings (1024/256/64) for a topic summary.
+   * Generate embedding (1536-dim) for a topic summary.
    * Returns empty embeddings if embedding service is not available or fails.
    */
   private async generateTopicEmbeddings(summary: string): Promise<TopicEmbeddings> {
@@ -1014,16 +1012,10 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
       return EMPTY_EMBEDDINGS;
     }
 
-    // Embedding service returns full (4096) and compact (1024).
-    // For topics: full=compact(1024), compact=truncate+normalize(256), micro=truncate+normalize(64)
-    const vector1024 = result.value.compact; // Already 1024-dim and L2-normalized
-    const compact256 = l2Normalize(vector1024.slice(0, 256));
-    const micro64 = l2Normalize(vector1024.slice(0, 64));
-
+    // EmbeddingService.embed().compact is the 1536-dim vector in production
+    // (the field name "compact" is a historical artefact — rename deferred to bead llmems-fqx).
     return {
-      full: vector1024,
-      compact: compact256,
-      micro: micro64,
+      full: result.value.compact,
     };
   }
 
@@ -1472,15 +1464,6 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
 // ============================================================
 // Module-level helpers
 // ============================================================
-
-/**
- * L2 normalize a vector (divide each element by the L2 norm).
- * Returns the original vector if norm is 0 (avoids division by zero).
- */
-function l2Normalize(vec: number[]): number[] {
-  const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-  return norm > 0 ? vec.map(v => v / norm) : vec;
-}
 
 /**
  * Safely parse a JSON string, returning undefined on failure.

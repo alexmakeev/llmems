@@ -80,9 +80,7 @@ export interface Mem {
   summary: string;
   chunkIds: string[];
   embeddings: {
-    full: number[];    // 1024 dims
-    compact: number[]; // 256 dims
-    micro: number[];   // 64 dims
+    full: number[];    // 1536 dims
   };
   closedAt: Date;
 }
@@ -91,7 +89,7 @@ export interface Mem {
 
 /**
  * Result type returned by IEmbeddingService.embed().
- * The `compact` field holds the embedding vector (1024-dim in production).
+ * The `compact` field holds the embedding vector (1536-dim in production).
  * The field name "compact" is a historical artefact from an earlier multi-resolution
  * embedding design. Rename is deferred to bead llmems-fqx.
  */
@@ -126,7 +124,7 @@ export interface IMemStore {
   getEstablishedVocabulary?(contextId: string, minCount?: number): Promise<VocabularyTerm[]>;
   getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
   /**
-   * ANN vector search over mems.embedding (1024-dim) via HNSW cosine index.
+   * ANN vector search over mems.embedding (1536-dim) via HNSW cosine index.
    * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
    */
   searchMemsByVector?(vector: number[], k: number, contextId: string): Promise<Mem[]>;
@@ -137,7 +135,7 @@ export interface IMemStore {
   getActiveChunkIds?(contextId: string): Promise<Set<string>>;
   buildMemContext(contextId: string): Promise<MemContextData>;
   applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[] }; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
@@ -159,7 +157,7 @@ export interface IMemStore {
  */
 export interface IVectorMemStore extends IMemStore {
   /**
-   * ANN vector search over mems.embedding (1024-dim) via HNSW cosine index.
+   * ANN vector search over mems.embedding (1536-dim) via HNSW cosine index.
    * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
    */
   searchMemsByVector(vector: number[], k: number, contextId: string): Promise<Mem[]>;
