@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ok, err } from './shared/result.js';
 import type { Result } from './shared/result.js';
-import type { RecallNode, MessageEntry, MemChunk, RecallResult, IMemStore, VocabularyTerm, IEmbeddingService } from './types.js';
+import type { RecallNode, MessageEntry, RecallResult, IMemStore, VocabularyTerm, IEmbeddingService } from './types.js';
 import { retrySleep } from './retry-sleep.js';
 
 // ============================================================
@@ -69,6 +69,8 @@ export interface IPrecontextLoader {
 // Re-export for backward compatibility with callers that imported them from here.
 export type { IEmbeddingService, EmbeddingValue } from './types.js';
 import { MemManager, InMemoryMemStore } from './services/mem-manager.js';
+import { BackgroundIndexer } from './services/background-indexer.js';
+import type { ILLMSummarizer } from './services/background-indexer.js';
 import { createMemoryLogger } from './logging.js';
 
 // ============================================================
@@ -229,9 +231,6 @@ type TopicEmbeddings = {
   full: number[];    // 1536 dims
 };
 
-/** Empty embeddings fallback when embedding service is unavailable */
-const EMPTY_EMBEDDINGS: TopicEmbeddings = { full: [] };
-
 /** Background summarization result type */
 type BackgroundResult = {
   topics: { summary: string; chunkIds: string[]; embeddings: TopicEmbeddings; vocabulary: { term: string; count: number }[] }[];
@@ -318,6 +317,9 @@ export class OpenRouterChat {
   private readonly getBehaviorInstructions?: (() => Promise<string>) | undefined;
   private readonly getVocabulary?: (() => Promise<VocabularyTerm[]>) | undefined;
 
+  // Background indexer service (extracted from backgroundSummarize)
+  private readonly backgroundIndexer: BackgroundIndexer;
+
   // Concurrency management for background summarization
   private isSummarizing = false;
   private pendingResult: BackgroundResult | null = null;
@@ -347,6 +349,14 @@ export class OpenRouterChat {
 
     if (options.sessionConsolidator !== undefined) this.sessionConsolidator = options.sessionConsolidator;
     if (options.precontextLoader !== undefined) this.precontextLoader = options.precontextLoader;
+
+    // Wire BackgroundIndexer with an ILLMSummarizer that delegates to callOpenRouter.
+    // Arrow function captures `this` after full construction.
+    const llmSummarizer: ILLMSummarizer = {
+      summarize: (systemPrompt, detectionPrompt) =>
+        this.callOpenRouterForSummarizer(systemPrompt, detectionPrompt),
+    };
+    this.backgroundIndexer = new BackgroundIndexer(this.memManager, this.embeddingService, llmSummarizer);
   }
 
   // ---- Topic stats (for external monitoring / testing) ----
@@ -793,30 +803,12 @@ export class OpenRouterChat {
       if (this.isSummarizing) return;
       this.isSummarizing = true;
 
-      this.memManager.getActiveChunks(contextId)
-        .then(chunks => {
-          if (chunks.length === 0) {
-            this.isSummarizing = false;
-            return;
+      // Delegate to BackgroundIndexer — handles getActiveChunks + LLM + embed + apply.
+      this.backgroundIndexer.index(contextId)
+        .then(archivedChunkIds => {
+          if (archivedChunkIds.length > 0) {
+            this.log.info({ archivedCount: archivedChunkIds.length }, 'background: indexer archived chunks');
           }
-          return this.backgroundSummarize(chunks, contextId)
-            .then(async (result) => {
-              // Apply immediately in background — don't defer to next prompt()
-              if (result.topics.length > 0 || result.newGeneralSummary !== null) {
-                try {
-                  await this.memManager.applyBackgroundResult(
-                    result.topics,
-                    result.tailChunkIds,
-                    result.newGeneralSummary,
-                    contextId
-                  );
-                  this.log.info({ topicsClosed: result.topics.length }, 'background: applied result immediately');
-                } catch (err) {
-                  this.log.warn({ error: err }, 'background: failed to apply result, deferring');
-                  this.pendingResult = result;
-                }
-              }
-            });
         })
         .catch(error => {
           // Log error but don't crash
@@ -829,94 +821,21 @@ export class OpenRouterChat {
   }
 
   /**
-   * Background summarization: detect completed narrative arcs and summarize them.
+   * ILLMSummarizer implementation: call OpenRouter with the background summarization
+   * schema and parse the result.
    *
-   * LLM Call #1: Detection + summarization
-   * LLM Call #2: Update general summary (only if topics found)
+   * This is the bridge between BackgroundIndexer (which calls ILLMSummarizer.summarize)
+   * and callOpenRouter (the private low-level HTTP method).
+   *
+   * Returns parsed {topics, tailChunkIds} or null on LLM/parse failure.
    */
-  private async backgroundSummarize(chunks: MemChunk[], contextId: string): Promise<BackgroundResult> {
-    // TODO: re-enable general summary when memory is mature
-    // Take snapshot of current state (needed for general summary)
-    // const contextData = await this.memManager.getContextData(contextId);
-    // const currentGeneralSummary = contextData.generalSummary;
-
-    // Load known vocabulary terms for prompt injection
-    const knownTerms = await this.memManager.getEstablishedVocabulary(contextId, 3);
-
-    const knownTermsSection = knownTerms.length > 0
-      ? `Known vocabulary (use these exact spellings when matching):\n${knownTerms.map((t: VocabularyTerm) => `- ${t.term}`).join('\n')}\n`
-      : 'No known vocabulary yet. Extract new domain-specific terms freely.\n';
-
-    // Get only the last closed mem — for context that the first chunks may be its tail
-    const lastClosedTopic = await this.memManager.getLastClosedMem(contextId);
-
-    // Format chunks with IDs
-    const chunksText = chunks
-      .map(c => `[id:${c.id}] ${c.content}`)
-      .join('\n');
-
-    const systemPrompt = `You segment conversations into mems (atomic topic units).
-
-DEFINITION: A mem is a SEGMENT of conversation about one subject. All messages within a segment — questions, answers, reactions, follow-ups — belong to the SAME mem as long as the subject hasn't changed.
-
-GRANULARITY CALIBRATION:
-- TOO FINE (wrong): one mem per message (613), (614), (615)...
-- CORRECT: one mem per subject — "Setting up roleplay rules" (613-618), "Meeting in cafe over books" (619-624)
-- TOO COARSE (wrong): entire conversation = one mem
-
-MERGING RULE: If two adjacent chunks discuss the same subject (one asks, the other answers) — they are ONE mem. Keep merging until the subject changes.
-
-SPLITTING CHECK: If a mem exceeds 6 chunks, verify the subject didn't shift midway. If it did — split at the shift point. Example: "discussing literature" (10 chunks) might actually be "meeting over Latin American books" + "debating Russian classics" — two different subjects.
-
-The LAST mem is always OPEN — put all its chunks in tailChunkIds. A mem is only CLOSED when a different subject starts after it.
-
-OUTPUT: For each closed mem — chunkIds + summary.
-
-SUMMARY RULES:
-- Write the summary in the SAME LANGUAGE as the conversation
-- The summary is a MEMORY, not a headline. It must contain all extractable facts in a concise form
-- PRESERVE: numbers, dates, names, specific facts, relationships, conclusions, decisions, actionable details
-- SECONDARY: emotions, filler words, pleasantries — include only if they carry meaning
-- Length: as many sentences as needed to capture all key facts (typically 3-8 sentences for substantive topics, 1-2 for simple exchanges)
-- Think of it as: "What would someone need to know to continue this conversation after forgetting everything?"
-
-VOCABULARY EXTRACTION:
-For each closed topic, extract domain-specific TERMS — words and phrases that serve as "points in meaning space", anchoring thoughts to specific domains, technologies, or concepts. Terms connect mems that share the same subject matter.
-
-WHAT IS A TERM:
-A term has a SPECIFIC REFERENT — it names a concrete thing, not an abstract action or category:
-- "PostgreSQL" YES (specific DB), "database" NO (category)
-- "React" YES (specific library), "framework" NO (category)
-A term is a NAMED ENTITY in the broadest sense: a technology, library, tool, protocol, pattern, methodology, product, project, service, role, concept, or standard.
-It would appear in a glossary or index, not in a dictionary of common words.
-
-WHAT IS NOT A TERM:
-- Category words without specific referent: server, database, function, component, module, endpoint
-- Action verbs even if technical: deploy, refactor, debug, implement, configure, migrate
-- Generic adjectives/adverbs: async, recursive, scalable
-- Everyday words: message, answer, problem, result, list
-
-${knownTermsSection}
-Rules:
-- For each term: count = approximate number of occurrences within this topic's chunks
-- Match to known vocabulary first (use the exact spelling from the list above)
-- Only add NEW terms if they are clearly domain-specific and NOT from voice-transcribed content
-- Voice-transcribed content (marked with [Voice] or similar indicators): ONLY match to known terms, do NOT introduce new terms from voice input — transcription errors would pollute the vocabulary
-- A high count for a term in one topic suggests that topic contains the term's definition
-- Preserve original capitalization for new terms
-- When unsure if something qualifies — include it. Precision is ensured by the count threshold: noise terms naturally stay below the threshold and get filtered out`;
-
-
-    const lastTopicContext = lastClosedTopic
-      ? `Last closed topic: "${lastClosedTopic.summary.substring(0, 200).trim()}"\nNote: the first chunks below may be a tail from this topic.\n\n`
-      : '';
-
-    // LLM Call #1: Detection + summarization
-    const detectionPrompt = `${lastTopicContext}Conversation chunks:
-${chunksText}
-
-Identify the topics. For each completed topic, provide a summary and the chunk IDs that belong to it. Chunks that belong to the ongoing (not yet completed) topic go into tailChunkIds.`;
-
+  private async callOpenRouterForSummarizer(
+    systemPrompt: string,
+    detectionPrompt: string,
+  ): Promise<{
+    topics: Array<{ summary: string; chunkIds: string[]; vocabulary: Array<{ term: string; count: number }> }>;
+    tailChunkIds: string[];
+  } | null> {
     const detectionResult = await this.callOpenRouter(
       systemPrompt,
       [{ role: 'user', content: detectionPrompt }],
@@ -925,98 +844,19 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     );
 
     if (!detectionResult.ok) {
-      this.log.warn({ error: detectionResult.error }, 'backgroundSummarize: detection LLM call failed');
-      return { topics: [], tailChunkIds: chunks.map(c => c.id), newGeneralSummary: null };
+      this.log.warn({ error: detectionResult.error }, 'callOpenRouterForSummarizer: LLM call failed');
+      return null;
     }
 
     const parsedJson = safeJsonParse(detectionResult.value);
     const parsed = BackgroundSummarizationSchema.safeParse(parsedJson);
 
     if (!parsed.success) {
-      this.log.warn({ raw: detectionResult.value }, 'backgroundSummarize: failed to parse detection response');
-      return { topics: [], tailChunkIds: chunks.map(c => c.id), newGeneralSummary: null };
+      this.log.warn({ raw: detectionResult.value }, 'callOpenRouterForSummarizer: failed to parse response');
+      return null;
     }
 
-    let { topics, tailChunkIds } = parsed.data;
-
-    // Input validation: filter out ghost topics with no chunkIds.
-    // The LLM sometimes returns topics reconstructed from the general summary
-    // rather than actual chunks. A topic without chunks has no meaning.
-    const ghostTopics = topics.filter(t => t.chunkIds.length === 0);
-    if (ghostTopics.length > 0) {
-      this.log.warn(
-        { ghostCount: ghostTopics.length, summaries: ghostTopics.map(t => t.summary.substring(0, 60)) },
-        'backgroundSummarize: filtered out ghost topics with empty chunkIds',
-      );
-    }
-    topics = topics.filter(t => t.chunkIds.length > 0);
-
-    // LLM Call #2: Update general summary (only if topics were found)
-    // TODO: re-enable general summary when memory is mature
-    const newGeneralSummary: string | null = null;
-    // if (topics.length >= 1) {
-    //   const topicSummariesText = topics.map((t, i) => `${i + 1}. ${t.summary}`).join('\n');
-    //
-    //   const summaryPrompt = currentGeneralSummary.length > 0
-    //     ? `Existing general summary:\n${currentGeneralSummary}\n\nNew topic summaries to merge:\n${topicSummariesText}\n\nMerge new topic summaries into the general summary. Each idea = ONE line. NEVER delete existing ideas. Append new ones.`
-    //     : `Create a general summary from these topic summaries:\n${topicSummariesText}\n\nEach idea = ONE line.`;
-    //
-    //   const summaryResult = await this.callOpenRouter(
-    //     'Merge new topic summaries into general summary. Each idea = ONE line. NEVER delete existing ideas. Append new ones.',
-    //     [{ role: 'user', content: summaryPrompt }],
-    //     GENERAL_SUMMARY_UPDATE_FORMAT,
-    //     0, // temperature=0 for deterministic summary updates
-    //   );
-    //
-    //   if (summaryResult.ok) {
-    //     const summaryParsed = GeneralSummaryUpdateSchema.safeParse(safeJsonParse(summaryResult.value));
-    //     if (summaryParsed.success) {
-    //       const candidate = summaryParsed.data.general_summary;
-    //       // Guard against information loss
-    //       if (currentGeneralSummary.length > 0 && candidate.length < currentGeneralSummary.length * 0.8) {
-    //         this.log.warn(
-    //           { oldLen: currentGeneralSummary.length, newLen: candidate.length },
-    //           'backgroundSummarize: LLM shrunk summary by >20%, appending instead',
-    //         );
-    //         newGeneralSummary = currentGeneralSummary + '\n' + topics.map(t => t.summary).join('\n');
-    //       } else {
-    //         newGeneralSummary = candidate;
-    //       }
-    //     }
-    //   }
-    // }
-
-    // Generate embeddings for each topic
-    const topicsWithEmbeddings = await Promise.all(
-      topics.map(async (topic) => {
-        const embeddings = await this.generateTopicEmbeddings(topic.summary);
-        return { ...topic, embeddings, vocabulary: topic.vocabulary || [] };
-      }),
-    );
-
-    return { topics: topicsWithEmbeddings, tailChunkIds, newGeneralSummary };
-  }
-
-  /**
-   * Generate embedding (1536-dim) for a topic summary.
-   * Returns empty embeddings if embedding service is not available or fails.
-   */
-  private async generateTopicEmbeddings(summary: string): Promise<TopicEmbeddings> {
-    if (!this.embeddingService) {
-      return EMPTY_EMBEDDINGS;
-    }
-
-    const result = await this.embeddingService.embed(summary);
-    if (!result.ok) {
-      this.log.warn({ error: result.error }, 'Failed to generate topic embeddings, using empty');
-      return EMPTY_EMBEDDINGS;
-    }
-
-    // EmbeddingService.embed().compact is the 1536-dim vector in production
-    // (the field name "compact" is a historical artefact — rename deferred to bead llmems-fqx).
-    return {
-      full: result.value.compact,
-    };
+    return { topics: parsed.data.topics, tailChunkIds: parsed.data.tailChunkIds };
   }
 
   // ---- Tool calling methods ----
