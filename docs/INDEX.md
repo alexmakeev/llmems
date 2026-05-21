@@ -6,104 +6,59 @@
 
 ## Где мы сейчас
 
-Ветка `feature/context-factory`. **Библиотека — чистая абстрактная память (v0.4.0).**
+Ветка `feature/context-factory`. **llmems = чистая абстрактная память v0.4.0.**
 
-`OpenRouterChat` удалён из библиотеки в рамках epic `llmems-e0b`. Весь чат-слой перенесён в altme-bot (ветка `absorb-chat`). Stages A–C закрыты. Stage D (docs + final review) — текущий.
+Эта сессия закрыла три эпика:
 
-Epic `llmems-flf` Stage 1 завершён.
-
-### Фаза 1 baseline context factory (закрыта, epic `vp3`)
-
-- `ContextFactory.remember()` — rawTail, EMA-сдвиг фокус-вектора, ANN-поиск, dedup, мягкая перестройка по порогу.
-- `ContextFactory.getCurrentContext()` — чистая проекция слоёнки (stable prefix → marker → dynamic block → raw tail), без БД.
-- Per-session working state (focusVector + loaded-mem cache + out-of-order counter).
-- Recalled-memory marker (конфигурируемый). Raw/mem dedup. SoftRebuild по cosine-sim.
-- Эмбеддинги: `openai/text-embedding-3-small` @ 1536 dim, OpenRouter.
-- Архитектурный ревью: 0 critical, FIX1–5 применены.
-- Baseline composite ≈ 0.9167 (`docs/baseline-metric.md`).
-
-### Epic `llmems-flf` Stage 1 (закрыт, commits 1089906 / c2a822e / 57721e1)
-
-Биды flf.1–flf.4, drc — **done**.
-
-- **flf.1** — Standalone `BackgroundIndexer` извлечён из `OpenRouterChat`, инжектирован в `ContextFactory`; старый путь зелёный через делегирование.
-- **flf.2** — `remember()` сохраняет каждый фрагмент как `mem_chunk(active)`, `chunkId` хранится в rawTail.
-- **flf.3** — Count-based trigger индексера: active-chunk count ≥ `indexThreshold` (default 16), fire-and-forget + guard против параллельного запуска.
-- **flf.4** — Session/theme vector = normalize(mean(last N=100 mems embeddings.full)); пересчитывается после каждого запуска индексера; кэшируется в per-session state.
-- **drc** — rawTail drain при reconciliation: raw-чанки заменяются mem-ом после индексации (bead был в Phase-1 known gaps).
-
-Тесты: **222/222 green** (после abstract-cleanup). `tsc` — чисто.
+- **vp3** (Phase 1 baseline context factory) — `ContextFactory.remember()` + `getCurrentContext()` + per-session state + EMA-фокус + ANN-recall + dedup + softRebuild. Baseline composite ≈ 0.9167 (`docs/baseline-metric.md`).
+- **flf** (dual-vector recall + background indexer) — `BackgroundIndexer` standalone, `remember()` → `mem_chunk(active)`, count-based trigger, session/theme vector, dual-vector recall (session + current), sloyonka per-provenance, context-quality metric. Тесты: 222/222 green (flake fixed, 8x stable). `tsc` чисто.
+- **e0b** (abstract-cleanup) — `OpenRouterChat` удалён, `LLMSummarizer` standalone, порты почищены, публичный API минимален. Чат-слой перенесён в altme-bot (ветка `absorb-chat`). Релиз: v0.4.0.
 
 ---
 
-## Что дальше
+## Что дальше (user-owned)
 
-**Epic `llmems-flf` Stage 2** — **GATED** на решение пользователя по дизайну:
-
-> Управляет ли session-vector отдельным recall-запросом (dual-vector recall), или тема = накопленный cache-prefix backbone, а recall — только через current-vector?
-
-До ответа Stage 2 заблокирован. Когда решение принято:
-
-| Бид | Описание |
-|-----|----------|
-| flf.5 | S2.6 Dual-vector recall (session + current queries) + per-mem provenance |
-| 991 | S2.7 Слоёнка layer 2/3: provenance split (focus-loaded vs raw-tail) |
-| tda | S2.8 Remove old context path (buildContext/buildTopicContext) |
-| flf.6 | S2.9 Metric update для dual-vector (per-provenance) + re-measure baseline |
-
-После Stage 2 — **epic `llmems-xcz`** (структура памяти + граф досборка, uplift vs baseline).
+1. **altme-bot** — review + merge + deploy ветки `absorb-chat`.
+2. **npm** — опубликовать `@alexmakeev/llmems@0.4.0`.
+3. **Altme upgrade** — поднять до v0.4.0; опционально: принять dual-vector `ContextFactory`.
+4. **Phase 2** (`xcz`) — структура памяти + граф досборка; gated on baseline. Биды ниже.
 
 ---
 
 ## Активные биды
 
-### P1 — Epic abstract-cleanup (llmems-e0b)
+### flf epic (открыт, sub-задачи done)
 
 | ID | Описание | Статус |
 |----|----------|--------|
-| llmems-e0b | Abstract-cleanup EPIC (чат → altme-bot) | open |
-| llmems-e0b.4 | Stage D: docs + final review (текущий) | in_progress |
+| llmems-flf | Dual-vector recall + background indexer (EPIC) | open |
 
-### P1 — Epic flf (открыт, Stage 2 gated)
-
-| ID | Описание | Статус |
-|----|----------|--------|
-| flf | Dual-vector recall + background indexer (EPIC) | open |
-| flf.5 | S2.6 Dual-vector recall + per-mem provenance | open (gated) |
-| flf.6 | S2.9 Metric update + re-measure baseline | open (gated) |
-
-### P2 — Фаза 2 (gated on flf)
+### P2 — Фаза 2 (gated on Phase 1 baseline)
 
 | ID | Описание | Статус |
 |----|----------|--------|
-| 991 | Слоёнка layer 2/3: provenance split | open |
-| e08 | Session lifecycle (TTL/LRU/eviction) | open |
-| xcz | Phase 2 — Structure + graph dosborka | open |
-| xcz.1 | Mem typing (event/period, ts vs event-time) | open |
-| xcz.2 | Hierarchical mems (year/quarter/month/day) | open |
-| xcz.3 | Graph dosborka — neighborhood expansion по 7 осям | open |
-| xcz.4 | Измерение uplift Phase 2 vs baseline | open |
+| llmems-xcz | Phase 2 — Structure + graph dosborka | open |
+| llmems-xcz.1 | Mem typing (event/period, ts vs event-time) | open |
+| llmems-xcz.2 | Hierarchical mems (year/quarter/month/day) | open |
+| llmems-xcz.3 | Graph dosborka — neighborhood expansion по 7 осям | open |
+| llmems-xcz.4 | Измерение uplift Phase 2 vs baseline | open |
+| llmems-e08 | Session lifecycle (TTL/LRU/eviction) | open |
+| llmems-dnh | Gold-set для baseline (не на этой машине) | open |
+| llmems-wji | Runbook benchmark pipeline (docs/benchmark.md) | open |
+| llmems-2le | fix: re-extract-projections без openaiModel/openaiBaseUrl | open |
+| llmems-a9r | security: dev-DB password в defaults benchmark scripts | open |
 
-### P3 — Deferred
+### P3 — Deferred / Backlog
 
 | ID | Описание |
 |----|----------|
-| mai | Edge cases тесты ContextFactory |
-| fqx | Rename `EmbeddingValue.compact` → `vector` |
-| dnh | Gold-set для baseline (не на этой машине) |
-| jvu | Schema-init/migration в репо |
-| sbg | Cleanup stale gitea remote |
-| bgy | Experiment: сравнение embedding моделей |
-| 76f | Redesign graphEnrichedRecall scoring |
-| 13y | Stabilize timer/retry-based tests (flaky timing) |
-
-### Backlog
-
-| ID | Описание |
-|----|----------|
-| 2le | fix: re-extract-projections без openaiModel/openaiBaseUrl |
-| wji | Runbook benchmark pipeline (docs/benchmark.md) |
-| a9r | security: dev-DB password в defaults benchmark scripts |
+| llmems-7zm | Graph densification (backbone subgraph) |
+| llmems-mai | Edge cases тесты ContextFactory |
+| llmems-fqx | Rename `EmbeddingValue.compact` → `vector` |
+| llmems-jvu | Schema-init/migration в репо |
+| llmems-sbg | Cleanup stale gitea remote |
+| llmems-bgy | Experiment: сравнение embedding моделей |
+| llmems-76f | Redesign graphEnrichedRecall scoring |
 
 ---
 
@@ -113,7 +68,7 @@ Epic `llmems-flf` Stage 1 завершён.
 |------|------|
 | `src/services/context-factory.ts` | Основная реализация ContextFactory |
 | `src/services/background-indexer.ts` | Standalone BackgroundIndexer (raw→mem→archive) |
-| `src/services/llm-summarizer.ts` | Конкретная реализация ILLMSummarizer (OpenAI-compatible) |
+| `src/services/llm-summarizer.ts` | Standalone LLMSummarizer (OpenAI-compatible) |
 | `src/services/postgres-mem-store.ts` | PostgreSQL-реализация IVectorMemStore |
 | `src/services/context-metric.ts` | Метрика качества контекста |
 | `src/types.ts` | Доменные типы (Mem, EmbeddingValue, IVectorMemStore, …) |
@@ -121,4 +76,5 @@ Epic `llmems-flf` Stage 1 завершён.
 | `docs/vision.md` | Архитектурное видение (north-star) |
 | `docs/building-a-chat.md` | Паттерн потребителя: чат поверх llmems |
 | `docs/baseline-metric.md` | Методика и результат замера baseline |
+| `docs/axis-experiment.md` | Эксперимент с осями (dual-vector recall) |
 | `sandboxes/schema-native.sql` | DDL схемы БД (pgvector HNSW) |
