@@ -407,4 +407,41 @@ export class PostgresMemStore implements IMemStore {
     );
     return result.rows.map(r => ({ term: r.term, count: r.count }));
   }
+
+  /**
+   * ANN vector search over mems.embedding (1024-dim) via HNSW cosine index.
+   * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
+   */
+  async searchMemsByVector(vector: number[], k: number, contextId: string): Promise<Mem[]> {
+    const memstoreId = await this.resolveMemstoreId(contextId);
+    const vectorSql = pgvector.toSql(vector);
+
+    const result = await this.pool.query(
+      `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+       FROM mems
+       WHERE memstore_id = $1
+       ORDER BY embedding <=> $2
+       LIMIT $3`,
+      [memstoreId, vectorSql, k],
+    );
+
+    return result.rows.map(rowToMem);
+  }
+
+  /**
+   * Returns the set of mem_chunk IDs that are currently in 'active' status (raw-present signal).
+   * Used by ContextFactory for dedup: a mem whose chunkIds overlap this set should not be loaded.
+   */
+  async getActiveChunkIds(contextId: string): Promise<Set<string>> {
+    const memstoreId = await this.resolveMemstoreId(contextId);
+
+    const result = await this.pool.query<{ id: number }>(
+      `SELECT id
+       FROM mem_chunks
+       WHERE memstore_id = $1 AND status = 'active'`,
+      [memstoreId],
+    );
+
+    return new Set(result.rows.map(r => String(r.id)));
+  }
 }

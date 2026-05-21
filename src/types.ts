@@ -105,6 +105,16 @@ export interface IMemStore {
   setBehaviorInstructions?(instructions: string, contextId: string): Promise<void>;
   getEstablishedVocabulary?(contextId: string, minCount?: number): Promise<VocabularyTerm[]>;
   getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
+  /**
+   * ANN vector search over mems.embedding (1024-dim) via HNSW cosine index.
+   * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
+   */
+  searchMemsByVector?(vector: number[], k: number, contextId: string): Promise<Mem[]>;
+  /**
+   * Returns the set of mem_chunk IDs that are still in 'active' status (raw-present signal).
+   * Used by ContextFactory dedup: a mem whose chunkIds overlap this set should not be loaded.
+   */
+  getActiveChunkIds?(contextId: string): Promise<Set<string>>;
   buildMemContext(contextId: string): Promise<MemContextData>;
   applyBackgroundResult(
     mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],

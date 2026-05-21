@@ -849,6 +849,164 @@ describe('PostgresMemStore', () => {
     });
   });
 
+  // ── searchMemsByVector ────────────────────────────────────────────────────
+
+  describe('searchMemsByVector', () => {
+    const makeMemRow = (id: number, summary: string, closedAt: Date) => ({
+      id,
+      summary,
+      chunk_ids: [id * 10],
+      embedding: `[0.${id},0.${id}]`,
+      embedding_compact: '[0.1]',
+      embedding_micro: '[0.2]',
+      closed_at: closedAt,
+    });
+
+    it('issues ORDER BY embedding <=> $vector LIMIT k scoped to memstore', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const vector = [0.1, 0.2, 0.3];
+      await store.searchMemsByVector(vector, 5, ctx);
+
+      const [sql, params] = mockPool.query.mock.calls[0]!;
+      expect(sql).toContain('ORDER BY embedding <=>');
+      expect(sql).toContain('LIMIT');
+      expect(sql).toContain('WHERE memstore_id');
+      // k=5 should appear in params
+      expect(params).toContain(5);
+      // memstore_id=42 should appear in params
+      expect(params).toContain(42);
+    });
+
+    it('returns mapped Mem rows in DB order', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      const t1 = new Date('2025-01-01T10:00:00Z');
+      const t2 = new Date('2025-01-02T10:00:00Z');
+
+      mockPool.query.mockResolvedValue({
+        rows: [makeMemRow(3, 'closest', t2), makeMemRow(1, 'second', t1)],
+      });
+
+      const results = await store.searchMemsByVector([0.5, 0.5], 2, ctx);
+
+      expect(results).toHaveLength(2);
+      expect(results[0]!.id).toBe('3');
+      expect(results[0]!.summary).toBe('closest');
+      expect(results[1]!.id).toBe('1');
+      expect(results[1]!.summary).toBe('second');
+    });
+
+    it('returns empty array when no mems exist', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const results = await store.searchMemsByVector([1.0], 10, ctx);
+      expect(results).toHaveLength(0);
+    });
+
+    it('passes vector as pgvector-formatted param', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const vector = [0.1, 0.2, 0.3];
+      await store.searchMemsByVector(vector, 3, ctx);
+
+      const pgvectorMod = await import('pgvector/pg');
+      expect(pgvectorMod.default.toSql).toHaveBeenCalledWith(vector);
+    });
+
+    it('maps chunkIds to strings', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      const t = new Date('2025-01-01T10:00:00Z');
+      mockPool.query.mockResolvedValue({
+        rows: [{
+          id: 7,
+          summary: 'mem seven',
+          chunk_ids: [10, 11, 12],
+          embedding: '[0.1]',
+          embedding_compact: '[0.2]',
+          embedding_micro: '[0.3]',
+          closed_at: t,
+        }],
+      });
+
+      const results = await store.searchMemsByVector([0.1], 5, ctx);
+      expect(results[0]!.chunkIds).toEqual(['10', '11', '12']);
+    });
+  });
+
+  // ── getActiveChunkIds ────────────────────────────────────────────────────
+
+  describe('getActiveChunkIds', () => {
+    it('returns a Set of active chunk IDs as strings', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({
+        rows: [{ id: 1 }, { id: 5 }, { id: 99 }],
+      });
+
+      const ids = await store.getActiveChunkIds(ctx);
+
+      expect(ids).toBeInstanceOf(Set);
+      expect(ids.size).toBe(3);
+      expect(ids.has('1')).toBe(true);
+      expect(ids.has('5')).toBe(true);
+      expect(ids.has('99')).toBe(true);
+    });
+
+    it('returns empty Set when no active chunks exist', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const ids = await store.getActiveChunkIds(ctx);
+      expect(ids.size).toBe(0);
+    });
+
+    it('queries only id column with status=active filter scoped to memstore', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.getActiveChunkIds(ctx);
+
+      const [sql, params] = mockPool.query.mock.calls[0]!;
+      expect(sql).toContain("status = 'active'");
+      expect(sql).toContain('WHERE memstore_id');
+      expect(params).toContain(42);
+    });
+  });
+
   // ── getEstablishedVocabulary ───────────────────────────────────────────────
 
   describe('getEstablishedVocabulary', () => {
