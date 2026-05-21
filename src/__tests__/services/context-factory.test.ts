@@ -3,8 +3,9 @@
 // All external dependencies mocked; no DB, no LLM, no network.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { IVectorMemStore, Mem, MemContextData, IEmbeddingService } from '../../types.js';
+import type { IVectorMemStore, Mem, MemChunk, MemContextData, IEmbeddingService } from '../../types.js';
 import type { Result } from '../../shared/result.js';
+import type { BackgroundIndexer } from '../../services/background-indexer.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Minimal mock IVectorMemStore — satisfies IVectorMemStore (required by ContextFactory)
@@ -12,7 +13,7 @@ import type { Result } from '../../shared/result.js';
 
 function makeMockStore(): IVectorMemStore {
   return {
-    addChunk: vi.fn(),
+    addChunk: vi.fn().mockResolvedValue({ id: 'chunk-default', content: '', timestamp: new Date() } satisfies import('../../types.js').MemChunk),
     getActiveChunks: vi.fn().mockResolvedValue([]),
     getClosedMems: vi.fn().mockResolvedValue([]),
     getGeneralSummary: vi.fn().mockResolvedValue(''),
@@ -46,6 +47,16 @@ function makeMockEmbeddingService(): IEmbeddingService {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Minimal mock BackgroundIndexer
+// ──────────────────────────────────────────────────────────────────────────────
+
+function makeMockIndexer(): BackgroundIndexer {
+  return {
+    index: vi.fn().mockResolvedValue([]),
+  } as unknown as BackgroundIndexer;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Import after mocks would be set up (no module-level vi.mock needed here)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -58,34 +69,36 @@ import { ContextFactory } from '../../services/context-factory.js';
 describe('ContextFactory', () => {
   let store: IVectorMemStore;
   let embeddingService: IEmbeddingService;
+  let indexer: BackgroundIndexer;
   let factory: ContextFactory;
 
   beforeEach(() => {
     store = makeMockStore();
     embeddingService = makeMockEmbeddingService();
-    factory = new ContextFactory(store, embeddingService);
+    indexer = makeMockIndexer();
+    factory = new ContextFactory(store, embeddingService, indexer);
   });
 
   // ── constructor ────────────────────────────────────────────────────────────
 
   describe('constructor', () => {
-    it('accepts store, embeddingService, and optional config', () => {
-      expect(() => new ContextFactory(store, embeddingService)).not.toThrow();
+    it('accepts store, embeddingService, indexer, and optional config', () => {
+      expect(() => new ContextFactory(store, embeddingService, indexer)).not.toThrow();
     });
 
     it('accepts REBUILD_THRESHOLD override in config', () => {
       expect(() =>
-        new ContextFactory(store, embeddingService, { rebuildThreshold: 10 }),
+        new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 10 }),
       ).not.toThrow();
     });
 
     it('defaults REBUILD_THRESHOLD to 30 when not provided', () => {
-      const f = new ContextFactory(store, embeddingService);
+      const f = new ContextFactory(store, embeddingService, indexer);
       expect(f.config.rebuildThreshold).toBe(30);
     });
 
     it('uses provided rebuildThreshold', () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 15 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 15 });
       expect(f.config.rebuildThreshold).toBe(15);
     });
   });
@@ -241,7 +254,7 @@ describe('ContextFactory', () => {
     });
 
     it('uses configurable alpha for EMA', async () => {
-      const customFactory = new ContextFactory(store, embeddingService, { alpha: 0.8 });
+      const customFactory = new ContextFactory(store, embeddingService, indexer, { alpha: 0.8 });
       // First fragment: focus = normalize(emb)
       await customFactory.remember('s1', 'first', 'ctx1');
       const state = customFactory.getOrCreateSession('s1');
@@ -629,7 +642,7 @@ describe('ContextFactory', () => {
     });
 
     it('uses configurable markerText from ContextFactoryConfig', async () => {
-      const customFactory = new ContextFactory(store, embeddingService, {
+      const customFactory = new ContextFactory(store, embeddingService, indexer, {
         markerText: 'Relevant memories:',
       });
       const state = customFactory.getOrCreateSession('s-custom-marker');
@@ -688,7 +701,7 @@ describe('ContextFactory', () => {
     }
 
     it('does NOT trigger rebuild when oooCounter is below rebuildThreshold', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 5 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 5 });
       const state = f.getOrCreateSession('s-no-rebuild');
 
       // Manually load 2 mems and set counter below threshold
@@ -709,7 +722,7 @@ describe('ContextFactory', () => {
     });
 
     it('triggers rebuild when oooCounter reaches rebuildThreshold', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 3 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 3 });
       const state = f.getOrCreateSession('s-trigger-rebuild');
 
       // focus: unit vector [1, 0, 0]
@@ -739,7 +752,7 @@ describe('ContextFactory', () => {
     });
 
     it('stale mems are dropped after rebuild', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-stale-dropped');
 
       // focus: unit vector [1, 0, 0]
@@ -769,7 +782,7 @@ describe('ContextFactory', () => {
     });
 
     it('survivors are ordered chronologically by closedAt after rebuild', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-sorted');
 
       // focus: [1, 0, 0]
@@ -804,7 +817,7 @@ describe('ContextFactory', () => {
     });
 
     it('cachePoint is reset to loaded.length after rebuild', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-cachepoint-reset');
 
       state.focus = [1, 0, 0];
@@ -825,7 +838,7 @@ describe('ContextFactory', () => {
     });
 
     it('oooCounter is reset to 0 after rebuild', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 2 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 2 });
       const state = f.getOrCreateSession('s-ooocounter-reset');
 
       state.focus = [1, 0, 0];
@@ -845,7 +858,7 @@ describe('ContextFactory', () => {
     });
 
     it('loadedMemIds is rebuilt to match loaded array after rebuild', async () => {
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1 });
       const state = f.getOrCreateSession('s-memids-rebuilt');
 
       state.focus = [1, 0, 0];
@@ -879,7 +892,7 @@ describe('ContextFactory', () => {
       // The "relevant" mem has full=[1,0,0] (matches focus — should be kept).
       // The "stale" mem has full=[0,1,0] (orthogonal to focus — should be dropped).
       // keepRatio=0.5 keeps only 1 of the 2 original mems.
-      const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1, keepRatio: 0.5 });
+      const f = new ContextFactory(store, embeddingService, indexer, { rebuildThreshold: 1, keepRatio: 0.5 });
       const state = f.getOrCreateSession('s-dim-guard');
 
       // focus = [1, 0, 0]
@@ -1028,6 +1041,133 @@ describe('ContextFactory', () => {
       // no mems loaded (steps 3-5 never ran)
       expect(state.loaded).toHaveLength(0);
       expect(state.oooCounter).toBe(0);
+    });
+  });
+
+  // ── S1.2: remember() persists fragment as mem_chunk ──────────────────────
+
+  describe('S1.2 — remember() calls store.addChunk and stores chunkId in rawTail', () => {
+    it('calls store.addChunk once per remember() call', async () => {
+      const addChunkSpy = vi.spyOn(store, 'addChunk');
+      await factory.remember('s1', 'hello world', 'ctx1');
+      expect(addChunkSpy).toHaveBeenCalledTimes(1);
+      expect(addChunkSpy).toHaveBeenCalledWith('hello world', expect.any(Date), 'ctx1');
+    });
+
+    it('calls store.addChunk for each fragment separately', async () => {
+      const addChunkSpy = vi.spyOn(store, 'addChunk');
+      await factory.remember('s1', 'first', 'ctx1');
+      await factory.remember('s1', 'second', 'ctx1');
+      expect(addChunkSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('stores the returned chunkId in the rawTail item', async () => {
+      const mockChunk: MemChunk = { id: 'chunk-abc', content: 'hello', timestamp: new Date() };
+      vi.mocked(store.addChunk).mockResolvedValueOnce(mockChunk);
+
+      await factory.remember('s1', 'hello', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+
+      expect(state.rawTail).toHaveLength(1);
+      expect(state.rawTail[0]!.chunkId).toBe('chunk-abc');
+    });
+
+    it('each rawTail item carries its own chunkId', async () => {
+      const chunk1: MemChunk = { id: 'chunk-1', content: 'first', timestamp: new Date() };
+      const chunk2: MemChunk = { id: 'chunk-2', content: 'second', timestamp: new Date() };
+      vi.mocked(store.addChunk).mockResolvedValueOnce(chunk1).mockResolvedValueOnce(chunk2);
+
+      await factory.remember('s1', 'first', 'ctx1');
+      await factory.remember('s1', 'second', 'ctx1');
+      const state = factory.getOrCreateSession('s1');
+
+      expect(state.rawTail[0]!.chunkId).toBe('chunk-1');
+      expect(state.rawTail[1]!.chunkId).toBe('chunk-2');
+    });
+  });
+
+  // ── S1.3: BackgroundIndexer wired into ContextFactory ────────────────────
+
+  describe('S1.3 — indexThreshold config and count-based indexer trigger', () => {
+    it('defaults indexThreshold to 16', () => {
+      expect(factory.config.indexThreshold).toBe(16);
+    });
+
+    it('accepts custom indexThreshold', () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 8 });
+      expect(f.config.indexThreshold).toBe(8);
+    });
+
+    it('does NOT call indexer.index when active chunk count is below threshold', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 4 });
+      // Active chunk count = 3 (below threshold)
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1', 'c2', 'c3']));
+
+      await f.remember('s1', 'fragment', 'ctx1');
+
+      expect(indexer.index).not.toHaveBeenCalled();
+    });
+
+    it('calls indexer.index when active chunk count reaches threshold', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 3 });
+      // Active chunk count = 3 (at threshold)
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1', 'c2', 'c3']));
+
+      await f.remember('s1', 'fragment', 'ctx1');
+
+      expect(indexer.index).toHaveBeenCalledWith('ctx1');
+    });
+
+    it('calls indexer.index when active chunk count exceeds threshold', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 2 });
+      // Active chunk count = 5 (above threshold)
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1', 'c2', 'c3', 'c4', 'c5']));
+
+      await f.remember('s1', 'fragment', 'ctx1');
+
+      expect(indexer.index).toHaveBeenCalledWith('ctx1');
+    });
+
+    it('concurrency guard prevents double-run: second remember() skips index while first is running', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+
+      // Make indexer.index slow so it's still "running" when second call arrives
+      let resolveIndex!: () => void;
+      const indexPromise = new Promise<string[]>(resolve => {
+        resolveIndex = () => resolve([]);
+      });
+      vi.mocked(indexer.index).mockReturnValueOnce(indexPromise);
+
+      // Kick off first remember (indexer starts, doesn't resolve yet)
+      const p1 = f.remember('s1', 'first', 'ctx1');
+
+      // Second remember while indexer is still running
+      await f.remember('s1', 'second', 'ctx1');
+
+      // Resolve the slow indexer
+      resolveIndex();
+      await p1;
+
+      // indexer.index called only once (second was blocked by guard)
+      expect(indexer.index).toHaveBeenCalledTimes(1);
+    });
+
+    it('stashes archivedChunkIds returned by indexer for later use (pendingArchivedChunkIds)', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+
+      const archivedIds = ['chunk-archived-1', 'chunk-archived-2'];
+      vi.mocked(indexer.index).mockResolvedValueOnce(archivedIds);
+
+      await f.remember('s1', 'fragment', 'ctx1');
+      // Flush microtask queue so the fire-and-forget .then() callback runs.
+      // indexer.index() is a resolved promise (mockResolvedValueOnce), so its
+      // .then() runs in the next microtask tick after remember() returns.
+      await Promise.resolve();
+
+      // The factory should expose the stashed ids via pendingArchivedChunkIds
+      expect(f.getPendingArchivedChunkIds('ctx1')).toEqual(archivedIds);
     });
   });
 });

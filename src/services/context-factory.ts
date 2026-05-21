@@ -14,6 +14,7 @@
 //   - getCurrentContext(): serialize session state to sloyonka text (no DB calls)
 
 import type { IVectorMemStore, Mem, IEmbeddingService } from '../types.js';
+import type { BackgroundIndexer } from './background-indexer.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Session working state
@@ -21,10 +22,16 @@ import type { IVectorMemStore, Mem, IEmbeddingService } from '../types.js';
 
 /**
  * Raw fragment in the session tail — text + timestamp at which it was received.
+ *
+ * chunkId: the mem_chunk row ID returned by store.addChunk() for this fragment.
+ * Set by remember() after persisting the fragment. Used by S1.4 rawTail drain
+ * to identify which chunks were archived by the indexer.
  */
 export interface RawFragment {
   content: string;
   receivedAt: Date;
+  /** ID of the mem_chunk row persisted for this fragment by store.addChunk(). */
+  chunkId: string;
 }
 
 /**
@@ -125,6 +132,15 @@ export interface ContextFactoryConfig {
    * Default: 0.7 (keep 70% of mems, drop 30% least relevant to current focus).
    */
   keepRatio: number;
+
+  /**
+   * Number of active mem_chunks required to trigger background indexing.
+   * At the end of remember(), if store.getActiveChunkIds(contextId).size >= indexThreshold,
+   * BackgroundIndexer.index(contextId) is triggered (fire-and-forget with concurrency guard).
+   *
+   * Default: 16 (§ epic spec).
+   */
+  indexThreshold: number;
 }
 
 const DEFAULT_CONFIG: ContextFactoryConfig = {
@@ -133,6 +149,7 @@ const DEFAULT_CONFIG: ContextFactoryConfig = {
   searchK: 10,
   markerText: 'Loaded from memory:',
   keepRatio: 0.7,
+  indexThreshold: 16,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -217,7 +234,30 @@ export class ContextFactory {
 
   private readonly store: IVectorMemStore;
   private readonly embeddingService: IEmbeddingService;
+  private readonly indexer: BackgroundIndexer;
   private readonly sessions = new Map<string, SessionWorkingState>();
+
+  /**
+   * Set of contextIds for which a BackgroundIndexer.index() run is currently in progress.
+   * Guards against concurrent index runs for the same contextId.
+   *
+   * DESIGN: fire-and-forget trigger style — remember() returns immediately after
+   * launching the indexer task. The guard ensures at most one concurrent indexer
+   * run per contextId. Tests inject a slow indexer.index mock and call remember()
+   * twice to verify the guard: the second call must not enqueue a second run.
+   * This makes concurrency behaviour deterministic in tests.
+   */
+  private readonly indexingContextIds = new Set<string>();
+
+  /**
+   * Stash for archivedChunkIds returned by the last completed indexer run per contextId.
+   * S1.4 rawTail drain will read this map to remove rawTail entries whose chunks
+   * were archived, and clear processed entries.
+   *
+   * Written by: remember() after indexer.index() resolves.
+   * Read/cleared by: S1.4 rawTail drain (not yet implemented).
+   */
+  private readonly pendingArchivedChunkIds = new Map<string, string[]>();
 
   /**
    * Constructs a ContextFactory.
@@ -226,16 +266,31 @@ export class ContextFactory {
    *   searchMemsByVector and getActiveChunkIds). PostgresMemStore satisfies this.
    *   InMemoryMemStore does NOT — passing it here is a compile error by design.
    * @param embeddingService - Embedding service for focus vector updates.
+   * @param indexer - BackgroundIndexer for archiving active chunks into mems.
+   *   Required (no optional fallback) — consistent with IVectorMemStore requirement.
    * @param config - Optional configuration overrides.
    */
   constructor(
     store: IVectorMemStore,
     embeddingService: IEmbeddingService,
+    indexer: BackgroundIndexer,
     config?: Partial<ContextFactoryConfig>,
   ) {
     this.store = store;
     this.embeddingService = embeddingService;
+    this.indexer = indexer;
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Returns the stashed archivedChunkIds from the last completed indexer run
+   * for the given contextId, or an empty array if none.
+   *
+   * Seam for S1.4 rawTail drain. S1.4 will call this, drain rawTail entries
+   * whose chunkId is in this list, then clear the entry.
+   */
+  getPendingArchivedChunkIds(contextId: string): string[] {
+    return this.pendingArchivedChunkIds.get(contextId) ?? [];
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -292,8 +347,12 @@ export class ContextFactory {
   async remember(sessionId: string, fragment: string, contextId: string): Promise<void> {
     const session = this.getOrCreateSession(sessionId);
 
-    // 1. Append raw fragment
-    session.rawTail.push({ content: fragment, receivedAt: new Date() });
+    // 1. Persist fragment as mem_chunk and append to rawTail.
+    //    addChunk is called before embed so the chunk exists in the store even
+    //    if embedding fails (rawTail behaviour is unchanged — fragment is appended
+    //    before the embed attempt, consistent with pre-S1.2 behaviour).
+    const chunk = await this.store.addChunk(fragment, new Date(), contextId);
+    session.rawTail.push({ content: fragment, receivedAt: chunk.timestamp, chunkId: chunk.id });
 
     // 2. Embed fragment and shift focus via EMA
     const embedResult = await this.embeddingService.embed(fragment);
@@ -350,6 +409,30 @@ export class ContextFactory {
     // Soft-rebuild check (vp3.7): trigger when oooCounter reaches the threshold.
     if (session.oooCounter >= this.config.rebuildThreshold) {
       this.softRebuild(session);
+    }
+
+    // Background indexer trigger: fire when active chunk count reaches indexThreshold.
+    //
+    // DESIGN: fire-and-forget. remember() returns immediately; indexer runs asynchronously.
+    // Concurrency guard (indexingContextIds Set) ensures at most one concurrent run per
+    // contextId. If the indexer is already running for this contextId, this call is a no-op.
+    //
+    // activeChunkIds was already fetched above for the dedup filter — reused here to
+    // avoid a second DB round-trip. The count reflects the state at dedup time, which
+    // is the correct signal: it includes the chunk just added by addChunk() above.
+    if (activeChunkIds.size >= this.config.indexThreshold && !this.indexingContextIds.has(contextId)) {
+      this.indexingContextIds.add(contextId);
+      this.indexer.index(contextId).then((archivedChunkIds) => {
+        // Stash archivedChunkIds for S1.4 rawTail drain.
+        // Overwrite any previously stashed ids — S1.4 will drain before the next trigger.
+        this.pendingArchivedChunkIds.set(contextId, archivedChunkIds);
+      }).catch(() => {
+        // Indexer errors are non-fatal — remember() has already succeeded.
+        // Stash empty array so S1.4 drain finds a clean state.
+        this.pendingArchivedChunkIds.set(contextId, []);
+      }).finally(() => {
+        this.indexingContextIds.delete(contextId);
+      });
     }
   }
 
