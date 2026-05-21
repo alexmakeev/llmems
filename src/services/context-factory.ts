@@ -203,8 +203,8 @@ function shiftFocus(prevFocus: number[], emb: number[], alpha: number): number[]
  * injected at construction time — allowing any IMemStore implementation (in-memory
  * or PostgreSQL) to be used without changing the factory.
  *
- * This implementation covers session-state management only (vp3.3).
- * remember() and getCurrentContext() are stubbed — implemented in subsequent chunks.
+ * Implements the full Phase-1 context-factory API (vp3.3–vp3.7):
+ * remember() mutates session state; getCurrentContext() serializes it.
  */
 export class ContextFactory {
   /** Resolved configuration (public for test assertions). */
@@ -267,8 +267,8 @@ export class ContextFactory {
    *   (b) Mems whose source chunks are still active (raw-present signal).
    *       These become eligible once their chunks are archived (compaction).
    *
-   * Soft-rebuild trigger: TODO (Chunk 3) — increment oooCounter here; the
-   * rebuild check will go immediately after oooCounter is updated.
+   * Soft-rebuild trigger: after incrementing oooCounter, triggers softRebuild()
+   * when oooCounter reaches config.rebuildThreshold (§5).
    *
    * @param sessionId - Identifies the session working state.
    * @param fragment  - Raw text fragment (user utterance or model answer).
