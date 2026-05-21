@@ -390,15 +390,23 @@ describe('ContextFactory', () => {
 
   describe('getCurrentContext — serializer', () => {
     /**
-     * Build a Mem fixture with a known closedAt date.
+     * Build a LoadedMem fixture with a known closedAt date.
+     * S2.7: provenance drives layer assignment — default 'current' (dynamic block).
      */
-    function makeMem(id: string, summary: string, closedAt: Date, chunkIds: string[] = []): Mem {
+    function makeMem(
+      id: string,
+      summary: string,
+      closedAt: Date,
+      chunkIds: string[] = [],
+      provenance: 'current' | 'backbone' = 'current',
+    ): import('../../services/context-factory.js').LoadedMem {
       return {
         id,
         summary,
         chunkIds,
         embeddings: { full: [] },
         closedAt,
+        provenance,
       };
     }
 
@@ -420,20 +428,20 @@ describe('ContextFactory', () => {
     it('serializes loaded mems in <mem ts="..."> XML format', async () => {
       const ts = new Date('2024-01-15T10:00:00.000Z');
       const state = factory.getOrCreateSession('s-xml-format');
+      // provenance 'current' (default) — mem appears in the current block
       state.loaded.push(makeMem('m1', 'Summary one', ts));
-      state.cachePoint = 0; // all in prefix (layer 1)
 
       const result = await factory.getCurrentContext('s-xml-format');
       expect(result).toContain('<mem ts="2024-01-15T10:00:00.000Z">Summary one</mem>');
     });
 
-    it('places mems before cachePoint (stable prefix / layer 1) before the marker and tail block', async () => {
+    it('backbone mems (stable) appear before current mems (dynamic) in render order', async () => {
       const ts1 = new Date('2024-01-01T00:00:00.000Z');
       const ts2 = new Date('2024-01-02T00:00:00.000Z');
       const state = factory.getOrCreateSession('s-prefix');
-      state.loaded.push(makeMem('m-prefix', 'Prefix mem', ts1));
-      state.loaded.push(makeMem('m-dynamic', 'Dynamic mem', ts2));
-      state.cachePoint = 1; // m-prefix in layer 1; m-dynamic in layer 2+
+      // S2.7: backbone = stable layer (no marker); current = dynamic layer (preceded by marker)
+      state.loaded.push(makeMem('m-prefix', 'Prefix mem', ts1, [], 'backbone'));
+      state.loaded.push(makeMem('m-dynamic', 'Dynamic mem', ts2, [], 'current'));
 
       const result = await factory.getCurrentContext('s-prefix');
       const prefixPos = result.indexOf('Prefix mem');
@@ -446,8 +454,8 @@ describe('ContextFactory', () => {
     it('places raw tail content after all loaded mems', async () => {
       const ts = new Date('2024-01-10T00:00:00.000Z');
       const state = factory.getOrCreateSession('s-tail-after-mems');
+      // provenance 'current' (default) — mem appears in current block; tail always after all mems
       state.loaded.push(makeMem('m1', 'Loaded summary', ts));
-      state.cachePoint = 1;
       state.rawTail.push({ content: 'current utterance', receivedAt: new Date() });
 
       const result = await factory.getCurrentContext('s-tail-after-mems');
@@ -472,7 +480,6 @@ describe('ContextFactory', () => {
     it('does NOT call store/DB methods during serialization (pure projection)', async () => {
       const state = factory.getOrCreateSession('s-no-store');
       state.loaded.push(makeMem('m1', 'Summary', new Date()));
-      state.cachePoint = 0;
       state.rawTail.push({ content: 'tail', receivedAt: new Date() });
 
       await factory.getCurrentContext('s-no-store');
@@ -499,7 +506,6 @@ describe('ContextFactory', () => {
       const closedAt = new Date('2025-06-30T14:30:00.000Z');
       const state = factory.getOrCreateSession('s-iso');
       state.loaded.push(makeMem('m1', 'ISO test', closedAt));
-      state.cachePoint = 0;
 
       const result = await factory.getCurrentContext('s-iso');
       expect(result).toContain('ts="2025-06-30T14:30:00.000Z"');
@@ -508,10 +514,9 @@ describe('ContextFactory', () => {
     // FIX 1: XML escape — context-poisoning prevention
     it('escapes < and > in summary to prevent XML tag injection', async () => {
       const state = factory.getOrCreateSession('s-escape-tags');
-      state.loaded.push(makeMem('m1', 'Contains </mem><x>injected</x>', new Date('2024-01-01T00:00:00.000Z')));
-      // Put in stable prefix (cachePoint = 1) so there is no "Loaded from memory:" marker,
-      // making it easier to assert the exact mem wrapper structure.
-      state.cachePoint = 1;
+      // Use backbone provenance so no "Loaded from memory:" marker appears — keeps
+      // the output a single intact mem element for the regex assertion.
+      state.loaded.push(makeMem('m1', 'Contains </mem><x>injected</x>', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
 
       const result = await factory.getCurrentContext('s-escape-tags');
       // Must not contain a raw </mem> that would break the wrapping structure
@@ -525,7 +530,6 @@ describe('ContextFactory', () => {
     it('escapes & in summary to prevent double-encoding and entity injection', async () => {
       const state = factory.getOrCreateSession('s-escape-amp');
       state.loaded.push(makeMem('m1', 'fish & chips and <fun>', new Date('2024-01-01T00:00:00.000Z')));
-      state.cachePoint = 0;
 
       const result = await factory.getCurrentContext('s-escape-amp');
       expect(result).toContain('&amp;');
@@ -538,7 +542,6 @@ describe('ContextFactory', () => {
     it('leaves safe summary text unchanged (no spurious escaping)', async () => {
       const state = factory.getOrCreateSession('s-no-spurious-escape');
       state.loaded.push(makeMem('m1', 'Plain text summary without special chars.', new Date('2024-01-01T00:00:00.000Z')));
-      state.cachePoint = 0;
 
       const result = await factory.getCurrentContext('s-no-spurious-escape');
       expect(result).toContain('Plain text summary without special chars.');
@@ -548,21 +551,30 @@ describe('ContextFactory', () => {
   // ── Step 7: recalled-memory marker ───────────────────────────────────────
 
   describe('getCurrentContext — recalled-memory marker (Step 7)', () => {
-    function makeMem(id: string, summary: string, closedAt: Date): Mem {
+    /**
+     * S2.7: marker appears before 'current' block only, not 'backbone'.
+     * Default provenance 'current' so tests that expect a marker work unchanged.
+     */
+    function makeMem(
+      id: string,
+      summary: string,
+      closedAt: Date,
+      provenance: 'current' | 'backbone' = 'current',
+    ): import('../../services/context-factory.js').LoadedMem {
       return {
         id,
         summary,
         chunkIds: [],
         embeddings: { full: [] },
         closedAt,
+        provenance,
       };
     }
 
     it('inserts default marker "Loaded from memory:" before the dynamic mem block', async () => {
       const state = factory.getOrCreateSession('s-marker-default');
-      // No prefix mems (cachePoint=0), one dynamic mem
+      // provenance 'current' (default) — mem is in the current (dynamic) block, marker appears before it
       state.loaded.push(makeMem('m1', 'Dynamic summary', new Date('2024-03-01T00:00:00.000Z')));
-      state.cachePoint = 0;
 
       const result = await factory.getCurrentContext('s-marker-default');
       const markerPos = result.indexOf('Loaded from memory:');
@@ -575,10 +587,9 @@ describe('ContextFactory', () => {
       const state = factory.getOrCreateSession('s-marker-not-before-tail');
       state.rawTail.push({ content: 'live tail text', receivedAt: new Date() });
       // No loaded mems at all
-      state.cachePoint = 0;
 
       const result = await factory.getCurrentContext('s-marker-not-before-tail');
-      // Marker must not appear if there are no dynamic loaded mems
+      // Marker must not appear if there are no current loaded mems
       // (it would be wrong to show the marker before pure raw tail)
       const tailIdx = result.indexOf('live tail text');
       const markerIdx = result.indexOf('Loaded from memory:');
@@ -587,7 +598,7 @@ describe('ContextFactory', () => {
         expect(markerIdx).toBeLessThan(tailIdx);
         // But the real check: marker absent when no loaded mems
         expect(state.loaded.length).toBe(0);
-        // marker should NOT appear when there are no dynamic mems to label
+        // marker should NOT appear when there are no current mems to label
         fail('Marker should not appear when loaded mems list is empty');
       }
       // marker absent — pass
@@ -598,34 +609,141 @@ describe('ContextFactory', () => {
         markerText: 'Relevant memories:',
       });
       const state = customFactory.getOrCreateSession('s-custom-marker');
+      // provenance 'current' (default) — marker applies to current block
       state.loaded.push(makeMem('m1', 'Custom marker test', new Date('2024-04-01T00:00:00.000Z')));
-      state.cachePoint = 0;
 
       const result = await customFactory.getCurrentContext('s-custom-marker');
       expect(result).toContain('Relevant memories:');
       expect(result).not.toContain('Loaded from memory:');
     });
 
-    it('marker appears only once even with multiple dynamic mems', async () => {
+    it('marker appears only once even with multiple current mems', async () => {
       const state = factory.getOrCreateSession('s-marker-once');
+      // Both mems are 'current' — one marker precedes the current block
       state.loaded.push(makeMem('m1', 'First mem', new Date('2024-01-01T00:00:00.000Z')));
       state.loaded.push(makeMem('m2', 'Second mem', new Date('2024-01-02T00:00:00.000Z')));
-      state.cachePoint = 0;
 
       const result = await factory.getCurrentContext('s-marker-once');
       const markerCount = (result.match(/Loaded from memory:/g) ?? []).length;
       expect(markerCount).toBe(1);
     });
 
-    it('no marker when loaded list is entirely in the stable prefix (all <= cachePoint)', async () => {
+    it('no marker when all loaded mems have backbone provenance', async () => {
       const state = factory.getOrCreateSession('s-marker-prefix-only');
-      state.loaded.push(makeMem('m1', 'Prefix only mem', new Date('2024-01-01T00:00:00.000Z')));
-      // cachePoint covers all loaded mems — entire list is stable prefix
-      state.cachePoint = 1;
+      // S2.7: backbone mems are stable, no marker
+      state.loaded.push(makeMem('m1', 'Backbone only mem', new Date('2024-01-01T00:00:00.000Z'), 'backbone'));
 
       const result = await factory.getCurrentContext('s-marker-prefix-only');
-      // Dynamic block is empty => no marker
+      // No current mems => no marker
       expect(result).not.toContain('Loaded from memory:');
+    });
+  });
+
+  // ── S2.7: слоёнка layers via provenance ──────────────────────────────────
+
+  describe('S2.7 — getCurrentContext sloyonka layers via provenance', () => {
+    function makeLoadedMem(
+      id: string,
+      summary: string,
+      closedAt: Date,
+      provenance: 'current' | 'backbone',
+    ): import('../../services/context-factory.js').LoadedMem {
+      return {
+        id,
+        summary,
+        chunkIds: [],
+        embeddings: { full: [] },
+        closedAt,
+        provenance,
+      };
+    }
+
+    it('backbone mems appear before current mems in render order', async () => {
+      const state = factory.getOrCreateSession('s2-order');
+      state.loaded.push(makeLoadedMem('c1', 'Current summary', new Date('2024-01-02T00:00:00.000Z'), 'current'));
+      state.loaded.push(makeLoadedMem('b1', 'Backbone summary', new Date('2024-01-01T00:00:00.000Z'), 'backbone'));
+
+      const result = await factory.getCurrentContext('s2-order');
+      const backbonePos = result.indexOf('Backbone summary');
+      const currentPos = result.indexOf('Current summary');
+      expect(backbonePos).toBeGreaterThanOrEqual(0);
+      expect(currentPos).toBeGreaterThanOrEqual(0);
+      expect(backbonePos).toBeLessThan(currentPos);
+    });
+
+    it('marker appears before current block, NOT before backbone block', async () => {
+      const state = factory.getOrCreateSession('s2-marker-placement');
+      state.loaded.push(makeLoadedMem('b1', 'Backbone mem', new Date('2024-01-01T00:00:00.000Z'), 'backbone'));
+      state.loaded.push(makeLoadedMem('c1', 'Current mem', new Date('2024-01-02T00:00:00.000Z'), 'current'));
+
+      const result = await factory.getCurrentContext('s2-marker-placement');
+      const markerPos = result.indexOf('Loaded from memory:');
+      const backbonePos = result.indexOf('Backbone mem');
+      const currentPos = result.indexOf('Current mem');
+      // Marker exists
+      expect(markerPos).toBeGreaterThanOrEqual(0);
+      // Backbone is before marker
+      expect(backbonePos).toBeLessThan(markerPos);
+      // Marker is before current
+      expect(markerPos).toBeLessThan(currentPos);
+    });
+
+    it('no marker when only backbone mems loaded (no current mems)', async () => {
+      const state = factory.getOrCreateSession('s2-backbone-only-no-marker');
+      state.loaded.push(makeLoadedMem('b1', 'Only backbone', new Date('2024-01-01T00:00:00.000Z'), 'backbone'));
+
+      const result = await factory.getCurrentContext('s2-backbone-only-no-marker');
+      expect(result).toContain('Only backbone');
+      expect(result).not.toContain('Loaded from memory:');
+    });
+
+    it('rawTail appears after both backbone and current mems', async () => {
+      const state = factory.getOrCreateSession('s2-tail-last');
+      state.loaded.push(makeLoadedMem('b1', 'Backbone text', new Date('2024-01-01T00:00:00.000Z'), 'backbone'));
+      state.loaded.push(makeLoadedMem('c1', 'Current text', new Date('2024-01-02T00:00:00.000Z'), 'current'));
+      state.rawTail.push({ content: 'Raw tail text', receivedAt: new Date() });
+
+      const result = await factory.getCurrentContext('s2-tail-last');
+      const backbonePos = result.indexOf('Backbone text');
+      const currentPos = result.indexOf('Current text');
+      const tailPos = result.indexOf('Raw tail text');
+      expect(tailPos).toBeGreaterThan(backbonePos);
+      expect(tailPos).toBeGreaterThan(currentPos);
+    });
+
+    it('provenance grouping: backbone mems serialized in their own block, current in theirs', async () => {
+      const state = factory.getOrCreateSession('s2-grouping');
+      // Interleaved in state.loaded: backbone, current, backbone — must be regrouped
+      state.loaded.push(makeLoadedMem('b1', 'Backbone A', new Date('2024-01-01T00:00:00.000Z'), 'backbone'));
+      state.loaded.push(makeLoadedMem('c1', 'Current A', new Date('2024-01-02T00:00:00.000Z'), 'current'));
+      state.loaded.push(makeLoadedMem('b2', 'Backbone B', new Date('2024-01-03T00:00:00.000Z'), 'backbone'));
+
+      const result = await factory.getCurrentContext('s2-grouping');
+      const ba = result.indexOf('Backbone A');
+      const bb = result.indexOf('Backbone B');
+      const ca = result.indexOf('Current A');
+      const marker = result.indexOf('Loaded from memory:');
+      // Both backbone mems before marker
+      expect(ba).toBeLessThan(marker);
+      expect(bb).toBeLessThan(marker);
+      // Current mem after marker
+      expect(ca).toBeGreaterThan(marker);
+      // Marker appears exactly once
+      expect((result.match(/Loaded from memory:/g) ?? []).length).toBe(1);
+    });
+
+    it('does NOT call store/DB methods (pure projection, S2.7)', async () => {
+      const state = factory.getOrCreateSession('s2-no-store');
+      state.loaded.push(makeLoadedMem('b1', 'Backbone', new Date(), 'backbone'));
+      state.loaded.push(makeLoadedMem('c1', 'Current', new Date(), 'current'));
+      state.rawTail.push({ content: 'tail', receivedAt: new Date() });
+
+      await factory.getCurrentContext('s2-no-store');
+
+      expect(store.searchMemsByVector).not.toHaveBeenCalled();
+      expect(store.getActiveChunkIds).not.toHaveBeenCalled();
+      expect(store.getClosedMems).not.toHaveBeenCalled();
+      expect(store.buildMemContext).not.toHaveBeenCalled();
     });
   });
 

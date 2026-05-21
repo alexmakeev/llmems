@@ -67,10 +67,13 @@ export interface SessionWorkingState {
   /** Set of mem IDs already in `loaded` — for O(1) dedup checks. */
   loadedMemIds: Set<string>;
   /**
-   * Index into `loaded` marking the stable cache prefix boundary.
-   * Mems at index < cachePoint are in the stable (KV-cacheable) prefix;
-   * mems at index >= cachePoint were appended after focus shifts and are
-   * in the dynamic tail. After a rebuild cachePoint is reset to loaded.length.
+   * Internal bookkeeping index reset by softRebuild to loaded.length
+   * (all survivors become a fresh baseline after each rebuild).
+   *
+   * S2.7: cachePoint NO LONGER drives getCurrentContext rendering.
+   * Layer assignment is now determined by mem.provenance ('backbone' | 'current').
+   * cachePoint is retained because softRebuild still resets it as a coherence marker
+   * and existing tests assert on its value post-rebuild.
    */
   cachePoint: number;
   /** Raw fragments not yet indexed into mems (the live tail). */
@@ -578,19 +581,30 @@ export class ContextFactory {
    *
    * PURE PROJECTION — no store/DB calls. All data comes from in-memory state.
    *
-   * Layer ordering (sloyonka):
-   *   [1] Stable prefix: loaded mems at indices < cachePoint.
-   *       These are KV-cacheable; rendered as <mem ts="...">...</mem>.
-   *   [2+3 COLLAPSED] Dynamic block: loaded mems at indices >= cachePoint,
-   *       preceded by the recalled-memory marker (config.markerText).
-   *       Phase-1 simplification: vision §4 distinguishes layer 2 (mems
-   *       loaded by focus-shift) from layer 3 (mems tied to raw unindexed
-   *       tail), but SessionWorkingState holds a single flat `loaded` list
-   *       without per-mem provenance tracking. All post-cachePoint mems are
-   *       therefore rendered in one block. A future bead can split this if
-   *       provenance tracking is added.
-   *   [4] Raw tail: rawTail fragments in order, as plain text (no <mem> tags).
+   * Layer ordering (sloyonka — S2.7 provenance-based split):
+   *   [1] BACKBONE block: all loaded mems with provenance === 'backbone'.
+   *       Recalled at reconciliation time via session/theme vector. Stable
+   *       between summarizations; prompt-cache friendly. No marker prefix.
+   *   [2] CURRENT block: all loaded mems with provenance === 'current',
+   *       preceded by the recalled-memory marker (config.markerText) when
+   *       at least one such mem exists. Recalled per-turn via current-vector.
+   *   [3] RAW TAIL: rawTail fragments in order, as plain text (no <mem> tags).
    *       Recomputed each call — never cached.
+   *
+   * Provenance is set by remember():
+   *   'backbone' — backbone recall (session-vector search at reconciliation).
+   *   'current'  — per-turn recall (current-vector ANN search each turn).
+   *
+   * DESIGN: grouping iterates session.loaded in insertion order and partitions
+   * by provenance. Mems may be interleaved in state.loaded (backbone recall
+   * happens before current recall within remember()), so we collect both
+   * groups independently and render backbone first, then current.
+   *
+   * cachePoint / softRebuild: cachePoint is retained in SessionWorkingState as
+   * an internal bookkeeping field (reset by softRebuild to survivors.length).
+   * It is NOT used for rendering — provenance drives layer assignment. This
+   * means cachePoint remains internally consistent across rebuilds without
+   * affecting the sloyonka output.
    *
    * Marker language: fully configurable via config.markerText. Auto-detection
    * is out of Phase-1 scope. Callers who know the conversation language should
@@ -607,22 +621,31 @@ export class ContextFactory {
 
     const parts: string[] = [];
 
-    // [1] Stable prefix (layer 1): mems at index < cachePoint
-    const prefixMems = session.loaded.slice(0, session.cachePoint);
-    for (const mem of prefixMems) {
+    // Partition loaded mems by provenance in a single pass.
+    const backboneMems: LoadedMem[] = [];
+    const currentMems: LoadedMem[] = [];
+    for (const mem of session.loaded) {
+      if (mem.provenance === 'backbone') {
+        backboneMems.push(mem);
+      } else {
+        currentMems.push(mem);
+      }
+    }
+
+    // [1] BACKBONE block: stable, no marker
+    for (const mem of backboneMems) {
       parts.push(this.serializeMem(mem));
     }
 
-    // [2+3] Dynamic block (layers 2+3 collapsed): mems at index >= cachePoint
-    const dynamicMems = session.loaded.slice(session.cachePoint);
-    if (dynamicMems.length > 0) {
+    // [2] CURRENT block: dynamic, preceded by marker (when non-empty)
+    if (currentMems.length > 0) {
       parts.push(this.config.markerText);
-      for (const mem of dynamicMems) {
+      for (const mem of currentMems) {
         parts.push(this.serializeMem(mem));
       }
     }
 
-    // [4] Raw tail: plain text, recomputed each call
+    // [3] RAW TAIL: plain text, recomputed each call
     for (const fragment of session.rawTail) {
       parts.push(fragment.content);
     }
