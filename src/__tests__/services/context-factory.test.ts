@@ -1170,4 +1170,248 @@ describe('ContextFactory', () => {
       expect(f.getPendingArchivedChunkIds('ctx1')).toEqual(archivedIds);
     });
   });
+
+  // ── S1.4: rawTail drain ──────────────────────────────────────────────────
+
+  describe('S1.4 — rawTail drain on reconciliation', () => {
+    it('removes rawTail entries whose chunkId is in pendingArchivedChunkIds', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 999 });
+      const state = f.getOrCreateSession('s1');
+
+      // Pre-populate rawTail with 3 fragments
+      state.rawTail.push({ content: 'archived-frag', receivedAt: new Date(), chunkId: 'chunk-A' });
+      state.rawTail.push({ content: 'keep-frag', receivedAt: new Date(), chunkId: 'chunk-B' });
+      state.rawTail.push({ content: 'also-archived', receivedAt: new Date(), chunkId: 'chunk-C' });
+
+      // Simulate indexer stash: chunks A and C were archived
+      // Access private map via getPendingArchivedChunkIds seam: set via internal trigger
+      // We need to set pendingArchivedChunkIds directly — use a low threshold to trigger it.
+      // Re-create with threshold=1, seed one active chunk, mock indexer to return archived ids.
+      const f2 = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+      const state2 = f2.getOrCreateSession('s2');
+      state2.rawTail.push({ content: 'frag-A', receivedAt: new Date(), chunkId: 'chunk-A' });
+      state2.rawTail.push({ content: 'frag-B', receivedAt: new Date(), chunkId: 'chunk-B' });
+      state2.rawTail.push({ content: 'frag-C', receivedAt: new Date(), chunkId: 'chunk-C' });
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-A', 'chunk-C']);
+
+      // First remember() fires indexer
+      await f2.remember('s2', 'trigger', 'ctx2');
+      // Flush microtask so the indexer .then() callback runs and stashes archived ids
+      await Promise.resolve();
+
+      // Verify stash is set
+      expect(f2.getPendingArchivedChunkIds('ctx2')).toEqual(['chunk-A', 'chunk-C']);
+
+      // Second remember() should drain rawTail: remove chunk-A and chunk-C entries
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set()); // below threshold this time
+      await f2.remember('s2', 'second', 'ctx2');
+
+      // rawTail should only contain frag-B (chunk-B not archived) and the new 'second' fragment
+      const remaining = state2.rawTail;
+      const contents = remaining.map(f => f.content);
+      expect(contents).not.toContain('frag-A');
+      expect(contents).not.toContain('frag-C');
+      expect(contents).toContain('frag-B');
+    });
+
+    it('keeps rawTail entries whose chunkId is NOT in the archived set', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+      const state = f.getOrCreateSession('s-keep');
+      state.rawTail.push({ content: 'keep-me', receivedAt: new Date(), chunkId: 'chunk-safe' });
+
+      // Indexer archives chunk-other (not chunk-safe)
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-other']);
+      await f.remember('s-keep', 'trigger', 'ctx-keep');
+      await Promise.resolve();
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-keep', 'second', 'ctx-keep');
+
+      const contents = state.rawTail.map(r => r.content);
+      expect(contents).toContain('keep-me');
+    });
+
+    it('clears pendingArchivedChunkIds after drain so it is not re-drained', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-X']);
+      await f.remember('s-clear', 'trigger', 'ctx-clear');
+      await Promise.resolve();
+
+      // After drain (second remember), pending should be cleared
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-clear', 'second', 'ctx-clear');
+
+      expect(f.getPendingArchivedChunkIds('ctx-clear')).toEqual([]);
+    });
+
+    it('does nothing to rawTail when no pending archived chunks exist', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 999 });
+      const state = f.getOrCreateSession('s-no-pending');
+      state.rawTail.push({ content: 'stays', receivedAt: new Date(), chunkId: 'chunk-Z' });
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-no-pending', 'fragment', 'ctx-no-pending');
+
+      expect(state.rawTail.map(r => r.content)).toContain('stays');
+    });
+  });
+
+  // ── S1.5: sessionVec compute + cache ────────────────────────────────────
+
+  describe('S1.5 — sessionVec compute and cache', () => {
+    function makeMemWithEmbedding(id: string, embedding: number[]): Mem {
+      return {
+        id,
+        summary: 'test',
+        chunkIds: [],
+        embeddings: { full: embedding },
+        closedAt: new Date(),
+      };
+    }
+
+    it('sessionVec is null initially (cold-start)', () => {
+      const state = factory.getOrCreateSession('s-vec-null');
+      expect(state.sessionVec).toBeNull();
+    });
+
+    it('sessionVec stays null when getClosedMems returns empty (no mems yet)', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue([]);
+
+      await f.remember('s-vec-cold', 'trigger', 'ctx-cold');
+      await Promise.resolve();
+      await f.remember('s-vec-cold', 'second', 'ctx-cold');
+
+      const state = f.getOrCreateSession('s-vec-cold');
+      expect(state.sessionVec).toBeNull();
+    });
+
+    it('computes sessionVec as normalized mean of mems embeddings after reconciliation', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      // Two mems with simple embeddings — mean = [1.5, 0, 0], normalized = [1, 0, 0]
+      const mems = [
+        makeMemWithEmbedding('m1', [1, 0, 0]),
+        makeMemWithEmbedding('m2', [2, 0, 0]),
+      ];
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue(mems);
+
+      await f.remember('s-vec-compute', 'trigger', 'ctx-vec');
+      await Promise.resolve();
+      await f.remember('s-vec-compute', 'second', 'ctx-vec');
+
+      const state = f.getOrCreateSession('s-vec-compute');
+      expect(state.sessionVec).not.toBeNull();
+      // mean of [1,0,0] and [2,0,0] = [1.5,0,0], normalized = [1,0,0]
+      expect(state.sessionVec![0]).toBeCloseTo(1, 5);
+      expect(state.sessionVec![1]).toBeCloseTo(0, 5);
+      expect(state.sessionVec![2]).toBeCloseTo(0, 5);
+    });
+
+    it('uses sessionVecN config to limit getClosedMems call', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, {
+        indexThreshold: 1,
+        sessionVecN: 50,
+      });
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue([makeMemWithEmbedding('m1', [1, 0, 0])]);
+
+      await f.remember('s-vec-n', 'trigger', 'ctx-vecn');
+      await Promise.resolve();
+
+      const getClosedMemsSpy = vi.spyOn(store, 'getClosedMems');
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-vec-n', 'second', 'ctx-vecn');
+
+      expect(getClosedMemsSpy).toHaveBeenCalledWith('ctx-vecn', 50);
+    });
+
+    it('defaults sessionVecN to 100', () => {
+      const f = new ContextFactory(store, embeddingService, indexer);
+      expect(f.config.sessionVecN).toBe(100);
+    });
+
+    it('skips mems with empty embeddings when computing sessionVec', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      const mems = [
+        makeMemWithEmbedding('m-empty', []),   // skip: empty
+        makeMemWithEmbedding('m-valid', [3, 4, 0]), // use: norm = 5, normalized = [0.6, 0.8, 0]
+      ];
+
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValue(mems);
+
+      await f.remember('s-vec-skip', 'trigger', 'ctx-skip');
+      await Promise.resolve();
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-vec-skip', 'second', 'ctx-skip');
+
+      const state = f.getOrCreateSession('s-vec-skip');
+      // Only m-valid contributes: mean([0.6,0.8,0]) = [0.6,0.8,0], already normalized
+      expect(state.sessionVec).not.toBeNull();
+      expect(state.sessionVec![0]).toBeCloseTo(0.6, 5);
+      expect(state.sessionVec![1]).toBeCloseTo(0.8, 5);
+    });
+
+    it('does NOT call getClosedMems on every remember() — only after reconciliation', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 999 });
+
+      const getClosedMemsSpy = vi.spyOn(store, 'getClosedMems');
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+
+      // No indexer trigger (threshold=999), so no reconciliation, so no getClosedMems call
+      await f.remember('s-vec-nocall', 'fragment', 'ctx-nocall');
+      await f.remember('s-vec-nocall', 'second', 'ctx-nocall');
+      await f.remember('s-vec-nocall', 'third', 'ctx-nocall');
+
+      expect(getClosedMemsSpy).not.toHaveBeenCalled();
+    });
+
+    it('recomputes sessionVec after each indexer run (not cached across runs)', async () => {
+      const f = new ContextFactory(store, embeddingService, indexer, { indexThreshold: 1 });
+
+      // First indexer run: returns mems with embedding [1, 0, 0]
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c1']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-1']);
+      vi.mocked(store.getClosedMems).mockResolvedValueOnce([makeMemWithEmbedding('m1', [1, 0, 0])]);
+
+      await f.remember('s-vec-recompute', 'first', 'ctx-recompute');
+      await Promise.resolve();
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-vec-recompute', 'after-first', 'ctx-recompute');
+
+      const state = f.getOrCreateSession('s-vec-recompute');
+      const vecAfterFirst = state.sessionVec ? [...state.sessionVec] : null;
+      expect(vecAfterFirst).not.toBeNull();
+
+      // Second indexer run: new mems with embedding [0, 1, 0] — sessionVec should update
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set(['c2']));
+      vi.mocked(indexer.index).mockResolvedValueOnce(['chunk-2']);
+      vi.mocked(store.getClosedMems).mockResolvedValueOnce([makeMemWithEmbedding('m2', [0, 1, 0])]);
+
+      await f.remember('s-vec-recompute', 'trigger2', 'ctx-recompute');
+      await Promise.resolve();
+      vi.mocked(store.getActiveChunkIds).mockResolvedValue(new Set());
+      await f.remember('s-vec-recompute', 'after-second', 'ctx-recompute');
+
+      // sessionVec should now reflect [0, 1, 0] normalized = [0, 1, 0]
+      expect(state.sessionVec![0]).toBeCloseTo(0, 5);
+      expect(state.sessionVec![1]).toBeCloseTo(1, 5);
+    });
+  });
 });

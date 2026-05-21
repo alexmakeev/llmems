@@ -72,6 +72,16 @@ export interface SessionWorkingState {
    * it reaches config.rebuildThreshold.
    */
   oooCounter: number;
+
+  /**
+   * Session/theme vector: normalized mean of embeddings.full over the last
+   * sessionVecN closed mems for this context. Computed (and cached) at the
+   * rawTail drain reconciliation point — i.e. the call to remember() that
+   * follows a completed indexer run. null until the first recompute.
+   *
+   * S1.5 — computed here; NOT used for recall yet (Stage 2 S2.6).
+   */
+  sessionVec: number[] | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -141,6 +151,15 @@ export interface ContextFactoryConfig {
    * Default: 16 (§ epic spec).
    */
   indexThreshold: number;
+
+  /**
+   * Number of most-recent closed mems to include when computing the session/theme vector.
+   * Passed to store.getClosedMems(contextId, sessionVecN) at the rawTail drain
+   * reconciliation point (after each completed indexer run).
+   *
+   * Default: 100.
+   */
+  sessionVecN: number;
 }
 
 const DEFAULT_CONFIG: ContextFactoryConfig = {
@@ -150,6 +169,7 @@ const DEFAULT_CONFIG: ContextFactoryConfig = {
   markerText: 'Loaded from memory:',
   keepRatio: 0.7,
   indexThreshold: 16,
+  sessionVecN: 100,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -312,6 +332,7 @@ export class ContextFactory {
         cachePoint: 0,
         rawTail: [],
         oooCounter: 0,
+        sessionVec: null,
       };
       this.sessions.set(sessionId, state);
     }
@@ -346,6 +367,50 @@ export class ContextFactory {
    */
   async remember(sessionId: string, fragment: string, contextId: string): Promise<void> {
     const session = this.getOrCreateSession(sessionId);
+
+    // S1.4 rawTail drain + S1.5 sessionVec recompute — reconciliation point.
+    //
+    // At the start of each remember() call, check if the background indexer has
+    // completed a run for this context (stash non-empty). If so:
+    //   (a) Remove rawTail entries whose chunkId was archived by the indexer run.
+    //       Once a fragment's chunk is digested into a mem, it leaves rawTail (vp3.6 handover).
+    //   (b) Recompute session.sessionVec as the normalized mean of the last sessionVecN
+    //       closed mems (S1.5). Recomputed here because new mems were just created by the
+    //       indexer — this is the earliest point the vector is stale and needs refreshing.
+    //       sessionVec is NOT recomputed on every remember() to avoid per-call DB round-trips.
+    //   (c) Clear the pending stash so it is not re-drained on the next remember() call.
+    const pendingArchived = this.pendingArchivedChunkIds.get(contextId);
+    if (pendingArchived !== undefined && pendingArchived.length > 0) {
+      // (a) Drain: remove rawTail entries whose chunkId is in the archived set
+      const archivedSet = new Set(pendingArchived);
+      session.rawTail = session.rawTail.filter(frag => !archivedSet.has(frag.chunkId));
+
+      // (b) Recompute sessionVec from the last sessionVecN closed mems
+      const closedMems = await this.store.getClosedMems(contextId, this.config.sessionVecN);
+      const validEmbeddings = closedMems
+        .map(m => m.embeddings.full)
+        .filter(emb => emb.length > 0);
+      if (validEmbeddings.length > 0) {
+        const dim = validEmbeddings[0]!.length;
+        const mean = new Array<number>(dim).fill(0);
+        for (const emb of validEmbeddings) {
+          for (let i = 0; i < dim; i++) {
+            mean[i]! += emb[i]!;
+          }
+        }
+        for (let i = 0; i < dim; i++) {
+          mean[i]! /= validEmbeddings.length;
+        }
+        session.sessionVec = normalize(mean);
+      }
+      // If validEmbeddings is empty, sessionVec stays null (cold-start).
+    }
+
+    // (c) Clear pending stash (whether or not there were archived chunks).
+    // Clearing when pendingArchived exists (even if empty array) ensures idempotent behaviour.
+    if (pendingArchived !== undefined) {
+      this.pendingArchivedChunkIds.delete(contextId);
+    }
 
     // 1. Persist fragment as mem_chunk and append to rawTail.
     //    addChunk is called before embed so the chunk exists in the store even
