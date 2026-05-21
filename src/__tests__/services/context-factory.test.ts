@@ -278,7 +278,7 @@ describe('ContextFactory', () => {
         id: 'mem-1',
         summary: 'Test summary',
         chunkIds: ['chunk-99'],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt: new Date(),
       };
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([mem]);
@@ -293,8 +293,8 @@ describe('ContextFactory', () => {
 
     it('increments oooCounter by the number of survivors added', async () => {
       const mems: Mem[] = [
-        { id: 'm1', summary: 's1', chunkIds: [], embeddings: { full: [], compact: [], micro: [] }, closedAt: new Date() },
-        { id: 'm2', summary: 's2', chunkIds: [], embeddings: { full: [], compact: [], micro: [] }, closedAt: new Date() },
+        { id: 'm1', summary: 's1', chunkIds: [], embeddings: { full: [] }, closedAt: new Date() },
+        { id: 'm2', summary: 's2', chunkIds: [], embeddings: { full: [] }, closedAt: new Date() },
       ];
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce(mems);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
@@ -322,7 +322,7 @@ describe('ContextFactory', () => {
         id: 'dup-mem',
         summary: 'Already loaded',
         chunkIds: [],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt: new Date(),
       };
 
@@ -347,7 +347,7 @@ describe('ContextFactory', () => {
         id: 'raw-mem',
         summary: 'Still raw',
         chunkIds: ['chunk-active'],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt: new Date(),
       };
       vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
@@ -366,7 +366,7 @@ describe('ContextFactory', () => {
         id: 'archived-mem',
         summary: 'Archived chunk',
         chunkIds: ['chunk-archived'],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt: new Date(),
       };
       vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
@@ -384,7 +384,7 @@ describe('ContextFactory', () => {
         id: 'handover-mem',
         summary: 'Handover case',
         chunkIds: ['chunk-transitioning'],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt: new Date(),
       };
 
@@ -409,7 +409,7 @@ describe('ContextFactory', () => {
         id: 'multi-chunk-mem',
         summary: 'Multi chunk',
         chunkIds: ['chunk-a', 'chunk-b-active'],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt: new Date(),
       };
       vi.mocked(store.searchMemsByVector).mockResolvedValue([mem]);
@@ -432,7 +432,7 @@ describe('ContextFactory', () => {
         id,
         summary,
         chunkIds,
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt,
       };
     }
@@ -588,7 +588,7 @@ describe('ContextFactory', () => {
         id,
         summary,
         chunkIds: [],
-        embeddings: { full: [], compact: [], micro: [] },
+        embeddings: { full: [] },
         closedAt,
       };
     }
@@ -669,9 +669,8 @@ describe('ContextFactory', () => {
   describe('soft-rebuild (Step 8)', () => {
     /**
      * Build a Mem with embeddings set for cosine-sim tests.
-     * softRebuild scores against mem.embeddings.full (1024-dim in production,
+     * softRebuild scores against mem.embeddings.full (1536-dim in production,
      * same dimension as session.focus). Tests use small equal-dim vectors.
-     * embedding is placed in `full`; compact and micro are left empty.
      */
     function makeMemWithEmbedding(
       id: string,
@@ -683,7 +682,7 @@ describe('ContextFactory', () => {
         id,
         summary,
         chunkIds: [],
-        embeddings: { full: embedding, compact: [], micro: [] },
+        embeddings: { full: embedding },
         closedAt,
       };
     }
@@ -874,34 +873,33 @@ describe('ContextFactory', () => {
       expect(state.loadedMemIds.has('m-drop')).toBe(false);
     });
 
-    it('scores against embeddings.full (1024-dim) not embeddings.compact (256-dim) — dim guard', async () => {
-      // This test would fail if softRebuild used mem.embeddings.compact instead of .full.
-      // focus is 3-dim (simulating 1024 in production).
-      // The "relevant" mem has full=[1,0,0] (matches focus) and compact=[0,1,0] (orthogonal to focus).
-      // The "stale" mem has full=[0,1,0] (orthogonal) and compact=[1,0,0] (matches focus).
-      // If softRebuild scored on compact, it would keep the stale mem and drop the relevant one.
-      // If softRebuild scored on full (correct), it keeps the relevant and drops the stale.
+    it('scores against embeddings.full (1536-dim) — dim guard', async () => {
+      // This test verifies softRebuild uses mem.embeddings.full for scoring.
+      // focus is 3-dim (simulating 1536 in production).
+      // The "relevant" mem has full=[1,0,0] (matches focus — should be kept).
+      // The "stale" mem has full=[0,1,0] (orthogonal to focus — should be dropped).
+      // keepRatio=0.5 keeps only 1 of the 2 original mems.
       const f = new ContextFactory(store, embeddingService, { rebuildThreshold: 1, keepRatio: 0.5 });
       const state = f.getOrCreateSession('s-dim-guard');
 
       // focus = [1, 0, 0]
       state.focus = [1, 0, 0];
 
-      // "relevant" mem: full=[1,0,0] (aligns with focus), compact=[0,1,0] (orthogonal — would be wrongly dropped)
+      // "relevant" mem: full=[1,0,0] aligns with focus — must be kept
       const relevantMem: Mem = {
         id: 'm-relevant',
         summary: 'Relevant mem',
         chunkIds: [],
-        embeddings: { full: [1, 0, 0], compact: [0, 1, 0], micro: [] },
+        embeddings: { full: [1, 0, 0] },
         closedAt: new Date('2024-01-01T00:00:00.000Z'),
       };
 
-      // "stale" mem: full=[0,1,0] (orthogonal — should be dropped), compact=[1,0,0] (aligns with focus — would be wrongly kept)
+      // "stale" mem: full=[0,1,0] orthogonal to focus — must be dropped
       const staleMem: Mem = {
         id: 'm-stale',
         summary: 'Stale mem',
         chunkIds: [],
-        embeddings: { full: [0, 1, 0], compact: [1, 0, 0], micro: [] },
+        embeddings: { full: [0, 1, 0] },
         closedAt: new Date('2024-01-02T00:00:00.000Z'),
       };
 
@@ -916,15 +914,13 @@ describe('ContextFactory', () => {
         id: 'm-trigger',
         summary: 'Trigger',
         chunkIds: [],
-        embeddings: { full: [1, 0, 0], compact: [1, 0, 0], micro: [] },
+        embeddings: { full: [1, 0, 0] },
         closedAt: new Date('2024-01-03T00:00:00.000Z'),
       };
       vi.mocked(store.searchMemsByVector).mockResolvedValueOnce([trigger]);
       vi.mocked(store.getActiveChunkIds).mockResolvedValueOnce(new Set());
       await f.remember('s-dim-guard', 'fragment', 'ctx1');
 
-      // If scored on full (correct): m-relevant kept (score=1), m-stale dropped (score=0)
-      // If scored on compact (wrong): m-stale kept (score=1), m-relevant dropped (score=0)
       // keepRatio=0.5 keeps only 1 of the original 2 (trigger is the third, added after scoring)
       // After rebuild the loaded list is re-sorted chronologically — m-relevant must be present
       const ids = state.loaded.map(m => m.id);
@@ -968,7 +964,7 @@ describe('ContextFactory', () => {
 
       vi.mocked(embeddingService.embed).mockResolvedValueOnce({
         ok: true,
-        value: { compact: new Array(1024).fill(0.1) }, // 1024-dim mismatch
+        value: { compact: new Array(1024).fill(0.1) }, // wrong dim — session established 3, this is 1024
       });
 
       const promise = factory.remember('s-dim-msg', 'second', 'ctx1');
