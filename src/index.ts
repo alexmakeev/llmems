@@ -18,6 +18,16 @@ export type {
 } from './types.js';
 
 // ============================================================
+// ContextFactory (session-scoped working state management)
+// ============================================================
+export { ContextFactory } from './services/context-factory.js';
+export type {
+  ContextFactoryConfig,
+  SessionWorkingState,
+  RawFragment,
+} from './services/context-factory.js';
+
+// ============================================================
 // OpenRouterChat (chat wrapper with memory + LLM inference)
 // ============================================================
 export { OpenRouterChat } from './openrouter-chat.js';
