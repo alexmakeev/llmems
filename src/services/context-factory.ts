@@ -3,14 +3,15 @@
 //
 // Implements the §3 vision:
 //   remember(sessionId, fragment, contextId) — mutates state
-//   getCurrentContext(sessionId) — projects state to text (stub in this chunk)
+//   getCurrentContext(sessionId) — projects state to text (pure projection)
 //
-// This chunk (vp3.3 + vp3.4 + vp3.6) covers:
+// Covers (vp3.3 + vp3.4 + vp3.6 + vp3.7):
 //   - SessionWorkingState type
 //   - ContextFactory class with in-memory Map<sessionId, state>
 //   - Lazy session creation on first access, session isolation
-//   - remember(): rawTail append, EMA focus shift, dedup mem load
-//   - getCurrentContext() stubbed (throw 'not implemented')
+//   - remember(): rawTail append, EMA focus shift, dedup mem load, soft-rebuild trigger
+//   - softRebuild(): drop stale mems by cosine-sim-to-focus, re-sort chronologically
+//   - getCurrentContext(): serialize session state to sloyonka text (no DB calls)
 
 import type { IMemStore, Mem } from '../types.js';
 import type { IEmbeddingService } from '../openrouter-chat.js';
@@ -92,12 +93,41 @@ export interface ContextFactoryConfig {
    * Default: 10.
    */
   searchK: number;
+
+  /**
+   * Short natural-language marker inserted immediately before the block of
+   * dynamically-loaded mems (vision §4 layer 2+). Appears once per serialized
+   * context when there is at least one dynamic mem.
+   *
+   * Language auto-detection is out of Phase-1 scope. The marker is configurable:
+   * callers who know the conversation language should pass the appropriate
+   * translation here. Default is English.
+   *
+   * Default: "Loaded from memory:"
+   */
+  markerText: string;
+
+  /**
+   * Fraction of mems to retain during soft-rebuild (§5).
+   * Range (0, 1]. After rebuild, the top ceil(loaded.length * keepRatio) mems
+   * ranked by cosine similarity to current focus are retained; the rest are dropped.
+   *
+   * DESIGN: cosine-sim-to-focus is the cheapest deterministic staleness proxy
+   * available without a store round-trip — aligns with the rebuild goal
+   * ("drop stale and irrelevant") and uses data already in memory.
+   * keepRatio avoids a hard threshold that would require empirical tuning.
+   *
+   * Default: 0.7 (keep 70% of mems, drop 30% least relevant to current focus).
+   */
+  keepRatio: number;
 }
 
 const DEFAULT_CONFIG: ContextFactoryConfig = {
   rebuildThreshold: 30,
   alpha: 0.5,
   searchK: 10,
+  markerText: 'Loaded from memory:',
+  keepRatio: 0.7,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -119,6 +149,17 @@ function normalize(v: number[]): number[] {
   const n = l2Norm(v);
   if (n === 0) return v.slice();
   return v.map(x => x / n);
+}
+
+/**
+ * Compute cosine similarity between two unit-normalized vectors.
+ * Both inputs are assumed to already be on the unit hypersphere (as produced
+ * by normalize()). Returns a value in [-1, 1] — higher means more similar.
+ * Returns 0 for empty or mismatched-dimension vectors (degenerate case).
+ */
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || a.length !== b.length) return 0;
+  return a.reduce((sum, ai, i) => sum + ai * (b[i] ?? 0), 0);
 }
 
 /**
@@ -246,6 +287,13 @@ export class ContextFactory {
       // We do not silently skip: a bad focus vector leads to wrong mem retrieval.
       throw new Error(`Embedding failed: ${embedResult.error.message}`);
     }
+    // DIMENSION CONTRACT: IEmbeddingService.embed().compact MUST match
+    // mem.embeddings.compact in dimension (production: both are 1024-dim despite
+    // the field name "compact"). The name "compact" is a historical artefact from
+    // an earlier multi-resolution embedding design. Do NOT use a smaller embedding
+    // here — the focus vector is used for cosine-sim against mem.embeddings.compact
+    // in softRebuild(), so dimension mismatch would silently corrupt similarity scores.
+    // Cleanup (rename to align field name with actual dim) is deferred to a separate bead.
     session.focus = shiftFocus(session.focus, embedResult.value.compact, this.config.alpha);
 
     // 3. Search for relevant mems using the updated focus
@@ -275,15 +323,137 @@ export class ContextFactory {
     // 6. Increment oooCounter by survivors added
     session.oooCounter += survivors.length;
 
-    // TODO (Chunk 3 — vp3.7): soft-rebuild check goes here.
-    // if (session.oooCounter >= this.config.rebuildThreshold) { ... }
+    // Soft-rebuild check (vp3.7): trigger when oooCounter reaches the threshold.
+    if (session.oooCounter >= this.config.rebuildThreshold) {
+      this.softRebuild(session);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Soft-rebuild (§5)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Soft-rebuild of the session working state (vision §5).
+   *
+   * Called when oooCounter reaches config.rebuildThreshold. Steps:
+   *   1. Score all loaded mems by cosine similarity to current focus
+   *      (using mem.embeddings.compact — same dimension as the focus vector
+   *      produced by IEmbeddingService.embed().compact).
+   *      DIMENSION NOTE: IEmbeddingService.embed().compact MUST match
+   *      mem.embeddings.compact in dimension (production: both are 1024-dim
+   *      despite the field name "compact"). This is a naming artefact; a
+   *      cleanup to rename the field is deferred to a separate bead.
+   *   2. Keep the top ceil(loaded.length * config.keepRatio) mems by score;
+   *      drop the rest (stale / lowest relevance to current focus).
+   *   3. Sort survivors chronologically by closedAt ascending.
+   *   4. Rebuild loadedMemIds to match the new loaded list exactly.
+   *   5. Reset cachePoint to loaded.length (all survivors become stable prefix).
+   *   6. Reset oooCounter to 0.
+   *
+   * DESIGN: cosine-sim-to-focus is the cheapest deterministic staleness proxy
+   * available in-memory — no store round-trip, aligned with the rebuild goal
+   * (drop least relevant to current focus). keepRatio avoids a hard threshold.
+   *
+   * Dedup handover: mems dropped from loaded lose their entry in loadedMemIds,
+   * so they will be re-eligible for loading if returned by future ANN searches.
+   * No special code needed — the dedup filter in remember() already uses
+   * loadedMemIds as its exclusion set.
+   */
+  private softRebuild(session: SessionWorkingState): void {
+    const keepCount = Math.max(1, Math.ceil(session.loaded.length * this.config.keepRatio));
+
+    // Score each mem by cosine similarity to current focus
+    // For mems with no embedding data (empty array), score is 0 (treated as stale)
+    const scored = session.loaded.map(mem => ({
+      mem,
+      score: cosineSimilarity(
+        session.focus,
+        normalize(mem.embeddings.compact),
+      ),
+    }));
+
+    // Sort descending by score to select top-K
+    scored.sort((a, b) => b.score - a.score);
+    const survivors = scored.slice(0, keepCount).map(s => s.mem);
+
+    // Sort survivors chronologically by closedAt ascending
+    survivors.sort((a, b) => a.closedAt.getTime() - b.closedAt.getTime());
+
+    // Update session state
+    session.loaded = survivors;
+    session.loadedMemIds = new Set(survivors.map(m => m.id));
+    session.cachePoint = survivors.length; // all survivors become stable prefix
+    session.oooCounter = 0;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Context serializer (§4)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Serialize the current session working state to a single text block
+   * ready for submission to an LLM (vision §4 "sloyonka" layer order).
+   *
+   * PURE PROJECTION — no store/DB calls. All data comes from in-memory state.
+   *
+   * Layer ordering (sloyonka):
+   *   [1] Stable prefix: loaded mems at indices < cachePoint.
+   *       These are KV-cacheable; rendered as <mem ts="...">...</mem>.
+   *   [2+3 COLLAPSED] Dynamic block: loaded mems at indices >= cachePoint,
+   *       preceded by the recalled-memory marker (config.markerText).
+   *       Phase-1 simplification: vision §4 distinguishes layer 2 (mems
+   *       loaded by focus-shift) from layer 3 (mems tied to raw unindexed
+   *       tail), but SessionWorkingState holds a single flat `loaded` list
+   *       without per-mem provenance tracking. All post-cachePoint mems are
+   *       therefore rendered in one block. A future bead can split this if
+   *       provenance tracking is added.
+   *   [4] Raw tail: rawTail fragments in order, as plain text (no <mem> tags).
+   *       Recomputed each call — never cached.
+   *
+   * Marker language: fully configurable via config.markerText. Auto-detection
+   * is out of Phase-1 scope. Callers who know the conversation language should
+   * pass the appropriate translation. Default is English.
+   *
+   * @param sessionId - The session to serialize. An unknown session is treated
+   *   as empty (returns "").
+   */
+  async getCurrentContext(sessionId: string): Promise<string> {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) {
+      return '';
+    }
+
+    const parts: string[] = [];
+
+    // [1] Stable prefix (layer 1): mems at index < cachePoint
+    const prefixMems = session.loaded.slice(0, session.cachePoint);
+    for (const mem of prefixMems) {
+      parts.push(this.serializeMem(mem));
+    }
+
+    // [2+3] Dynamic block (layers 2+3 collapsed): mems at index >= cachePoint
+    const dynamicMems = session.loaded.slice(session.cachePoint);
+    if (dynamicMems.length > 0) {
+      parts.push(this.config.markerText);
+      for (const mem of dynamicMems) {
+        parts.push(this.serializeMem(mem));
+      }
+    }
+
+    // [4] Raw tail: plain text, recomputed each call
+    for (const fragment of session.rawTail) {
+      parts.push(fragment.content);
+    }
+
+    return parts.join('\n').trimEnd();
   }
 
   /**
-   * Get the current context for a session as a serialized text block.
-   * Stub: implemented in vp3.5 (context serialization).
+   * Serialize a single mem to XML format: <mem ts="ISO8601">summary</mem>.
+   * ts = mem.closedAt in ISO 8601 (UTC).
    */
-  async getCurrentContext(_sessionId: string): Promise<string> {
-    throw new Error('not implemented');
+  private serializeMem(mem: Mem): string {
+    return `<mem ts="${mem.closedAt.toISOString()}">${mem.summary}</mem>`;
   }
 }
