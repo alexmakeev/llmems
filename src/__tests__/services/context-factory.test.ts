@@ -13,7 +13,7 @@ import type { BackgroundIndexer } from '../../services/background-indexer.js';
 
 function makeMockStore(): IVectorMemStore {
   return {
-    addChunk: vi.fn().mockResolvedValue({ id: 'chunk-default', content: '', timestamp: new Date() } satisfies import('../../types.js').MemChunk),
+    addChunk: vi.fn().mockImplementation(() => Promise.resolve({ id: 'chunk-default', content: '', timestamp: new Date() } satisfies import('../../types.js').MemChunk)),
     getActiveChunks: vi.fn().mockResolvedValue([]),
     getClosedMems: vi.fn().mockResolvedValue([]),
     getGeneralSummary: vi.fn().mockResolvedValue(''),
