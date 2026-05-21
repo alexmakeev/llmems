@@ -205,7 +205,7 @@ Phase 2 will measure composite **after** soft-rebuild with focus drift and compa
 
 ### Test Location
 
-`src/__tests__/services/context-metric.test.ts` — 27 deterministic tests covering all sub-metrics and the composite on this fixture. Key assertion:
+`src/__tests__/services/context-metric.test.ts` — deterministic tests covering all sub-metrics and the composite on this fixture. Key assertion (at the time of the original measurement, now superseded — see below):
 
 ```typescript
 const result = computeContextQualityScore({
@@ -217,4 +217,87 @@ const result = computeContextQualityScore({
 });
 expect(result.composite).toBeCloseTo(0.9166666667, 6);
 expect(result.composite).toBeGreaterThan(0.7); // Phase-2 gate
+```
+
+> **Note:** The original single-vector baseline (~0.9167) was measured under a different methodology (single `focus` vector). It is superseded by the dual-vector baseline below (S2.9, 2026-05-21), which uses a different `ContextQualityInputs` signature and is not comparable.
+
+---
+
+## Baseline Measurement (dual-vector, 2026-05-21)
+
+### Change: Dual-Vector focusRelevance (S2.9)
+
+`computeFocusRelevance` now evaluates each mem against **its own provenance vector** rather than a single shared focus vector:
+
+- `'current'` mems → compared to `currentVec` (per-turn embedding of the current fragment).
+- `'backbone'` mems → compared to `sessionVec` (normalized mean of recent closed mem embeddings).
+
+The `ContextQualityInputs` interface changed:
+- Removed: `focus: number[]`
+- Added: `currentVec: number[]` + `sessionVec: number[]`
+- `loadedMems` type changed: `Mem[]` → `ProvenanceMem[]` (= `Mem & { provenance: 'current' | 'backbone' }`)
+
+`dedupCorrectness` and `chronologyIntegrity` are unchanged — provenance is irrelevant for those two sub-metrics.
+
+### Dual-Vector Fixture Description
+
+Deterministic fixture with 4 provenance-tagged mems, 2-dim embeddings, no LLM/network/DB:
+
+```
+currentVec = [1, 0]   — unit vector, first dimension  (per-turn fragment embedding)
+sessionVec = [0, 1]   — unit vector, second dimension (session/theme vector; orthogonal to currentVec)
+threshold  = 0.5
+
+4 mems:
+  id='mem-A'  provenance='current'  embedding=[0.9, 0.1]  chunkIds=['1','2']  closedAt=t1
+              cosine to currentVec [1,0] ≈ 0.994 >= 0.5  → RELEVANT
+
+  id='mem-B'  provenance='current'  embedding=[0.1, 0.9]  chunkIds=['3','4']  closedAt=t2
+              cosine to currentVec [1,0] ≈ 0.110 <  0.5  → NOT RELEVANT
+
+  id='mem-C'  provenance='backbone'  embedding=[0.1, 0.9]  chunkIds=['5']   closedAt=t3
+              cosine to sessionVec [0,1] ≈ 0.994 >= 0.5  → RELEVANT
+
+  id='mem-D'  provenance='backbone'  embedding=[0.9, 0.1]  chunkIds=['6']   closedAt=t4
+              cosine to sessionVec [0,1] ≈ 0.110 <  0.5  → NOT RELEVANT
+
+activeChunkIds = new Set()   — empty, no contamination
+rebuildOccurred = false      — pre-rebuild state
+```
+
+The fixture intentionally uses orthogonal currentVec and sessionVec to make each group's relevance/irrelevance unambiguous. The symmetric design (1 relevant + 1 not-relevant per group) yields deterministic focusRelevance = 0.5.
+
+### Measured Scores (dual-vector)
+
+| Sub-metric | Value | Derivation |
+|---|---|---|
+| `focusRelevance` | **0.5** | 2 of 4 mems above threshold (mem-A via currentVec, mem-C via sessionVec) |
+| `dedupCorrectness` | **1.0** | No active chunk IDs — no contamination |
+| `chronologyIntegrity` | **1.0** | `rebuildOccurred=false` — pre-rebuild state returns 1.0 unconditionally |
+| **`composite`** | **≈ 0.8333** | (0.5 + 1.0 + 1.0) / 3 |
+
+The dual-vector composite of **0.8333** exceeds the Phase-2 gate threshold of `0.7`.
+
+### Why Not Comparable to the Original Baseline
+
+The original 0.9167 baseline used `focus = [1, 0]` and all 4 mems tagged as conceptually "relevant or not to this one focus." The dual-vector methodology splits mems into two groups (current / backbone) and scores each group against its own vector. A symmetric fixture with one not-relevant mem per group naturally produces focusRelevance = 0.5 instead of 0.75 — this reflects the design intent, not a quality regression.
+
+### Test Location
+
+`src/__tests__/services/context-metric.test.ts` — `describe('computeContextQualityScore — dual-vector baseline fixture (S2.9)')`. Key assertion:
+
+```typescript
+const result = computeContextQualityScore({
+  currentVec: [1, 0],
+  sessionVec: [0, 1],
+  loadedMems: [MEM_A_CUR, MEM_B_CUR, MEM_C_BKB, MEM_D_BKB],
+  activeChunkIds: new Set(),
+  threshold: 0.5,
+  rebuildOccurred: false,
+});
+expect(result.focusRelevance).toBeCloseTo(0.5, 10);     // 2/4 mems (1 current + 1 backbone)
+expect(result.dedupCorrectness).toBe(1.0);
+expect(result.chronologyIntegrity).toBe(1.0);
+expect(result.composite).toBeCloseTo(0.8333333333, 6);  // (0.5 + 1.0 + 1.0) / 3
+expect(result.composite).toBeGreaterThan(0.7);          // Phase-2 gate passes
 ```

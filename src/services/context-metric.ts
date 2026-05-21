@@ -9,8 +9,33 @@
 //
 // This metric is deterministic: given fixed inputs it always produces the same output.
 // No LLM, no network, no DB — pure in-memory computation.
+//
+// Dual-vector focusRelevance (S2.9):
+//   Each loaded mem carries a provenance tag ('current' | 'backbone').
+//   'current' mems are scored against currentVec (per-turn embedding of the current fragment).
+//   'backbone' mems are scored against sessionVec (normalized mean of recent closed mem embeddings).
+//   A mem counts as relevant if cosineSimilarity(mem.embeddings.full, <its-provenance-vector>) >= threshold.
+//   focusRelevance = (count of relevant mems) / (total loaded mems).   Returns 1.0 when empty.
 
 import type { Mem } from '../types.js';
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Provenance-tagged mem (metric-local type)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A Mem tagged with its retrieval provenance.
+ *
+ * Structurally identical to LoadedMem in context-factory.ts — callers can pass
+ * LoadedMem values directly without any cast (structural typing).
+ *
+ * Defined locally here to keep context-metric.ts self-contained and avoid
+ * a circular import (context-factory imports context-metric indirectly via its consumers).
+ *
+ * 'current'  — retrieved per-turn via currentVec (current fragment embedding).
+ * 'backbone' — retrieved at reconciliation via sessionVec (session/theme vector).
+ */
+export type ProvenanceMem = Mem & { provenance: 'current' | 'backbone' };
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Result types
@@ -20,7 +45,7 @@ import type { Mem } from '../types.js';
  * Breakdown of all three sub-metric scores plus the composite.
  */
 export interface ContextQualityScore {
-  /** Fraction of loaded mems with cosine similarity to focus >= threshold. Range [0.0, 1.0]. */
+  /** Fraction of loaded mems relevant to their own provenance vector (>= threshold). Range [0.0, 1.0]. */
   focusRelevance: number;
   /** 1.0 if no loaded mem is contaminated (source chunk still active), 0.0 otherwise. */
   dedupCorrectness: number;
@@ -38,10 +63,20 @@ export interface ContextQualityScore {
  * All inputs required to compute ContextQualityScore.
  */
 export interface ContextQualityInputs {
-  /** Current session focus vector (any consistent dimension). */
-  focus: number[];
-  /** Ordered list of mems assembled into the context (as held in session.loaded). */
-  loadedMems: Mem[];
+  /**
+   * Per-turn embedding vector for the current fragment (unit-normalized).
+   * Used as the relevance reference for mems with provenance === 'current'.
+   */
+  currentVec: number[];
+  /**
+   * Session/theme vector: normalized mean of recent closed mem embeddings.
+   * Used as the relevance reference for mems with provenance === 'backbone'.
+   * May be an empty array when no closed mems exist yet (cold-start).
+   * In cold-start, backbone mems score as 0 (no provenance vector available).
+   */
+  sessionVec: number[];
+  /** Ordered list of provenance-tagged mems assembled into the context (as held in session.loaded). */
+  loadedMems: ProvenanceMem[];
   /**
    * Set of chunk IDs currently in 'active' status (raw-present signal).
    * A mem is contaminated if any of its chunkIds appears in this set.
@@ -49,7 +84,7 @@ export interface ContextQualityInputs {
   activeChunkIds: Set<string>;
   /**
    * Similarity floor for focusRelevance sub-metric.
-   * A mem counts as relevant if cosineSimilarity(mem.embeddings.full, focus) >= threshold.
+   * A mem counts as relevant if cosineSimilarity(mem.embeddings.full, <provenance-vector>) >= threshold.
    * Proposed default: 0.50.
    */
   threshold: number;
@@ -85,25 +120,37 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Sub-metric A: focusRelevance
+// Sub-metric A: focusRelevance (dual-vector, S2.9)
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fraction of loaded mems whose cosine similarity to focus >= threshold.
+ * Fraction of loaded mems whose cosine similarity to their own provenance vector >= threshold.
+ *
+ * Each mem is scored against the vector that retrieved it:
+ *   'current' mems → compared to currentVec (per-turn fragment embedding).
+ *   'backbone' mems → compared to sessionVec (session/theme vector).
+ *
  * Returns 1.0 when there are no loaded mems (empty context is trivially relevant).
+ *
+ * Cold-start guard: if sessionVec is empty ([] — no closed mems yet) and a backbone
+ * mem is encountered, cosineSimilarity returns 0 (empty-vector path in cosineSimilarity),
+ * which falls below any positive threshold. This is correct: without a session vector
+ * there is no reference to score backbone mems against.
  *
  * Uses mem.embeddings.full as the mem's embedding vector — same field that
  * softRebuild() uses for scoring, ensuring metric-vs-factory consistency.
  */
 export function computeFocusRelevance(
-  focus: number[],
-  loadedMems: Mem[],
+  currentVec: number[],
+  sessionVec: number[],
+  loadedMems: ProvenanceMem[],
   threshold: number,
 ): number {
   if (loadedMems.length === 0) return 1.0;
   let relevantCount = 0;
   for (const mem of loadedMems) {
-    const sim = cosineSimilarity(mem.embeddings.full, focus);
+    const provenanceVec = mem.provenance === 'backbone' ? sessionVec : currentVec;
+    const sim = cosineSimilarity(mem.embeddings.full, provenanceVec);
     if (sim >= threshold) {
       relevantCount++;
     }
@@ -122,9 +169,12 @@ export function computeFocusRelevance(
  *
  * This is a binary metric because a single near-duplicate in context can
  * confuse the model — partial credit would misrepresent the severity.
+ *
+ * Provenance is irrelevant for dedup: contamination check is the same regardless
+ * of whether the mem was retrieved via currentVec or sessionVec.
  */
 export function computeDedupCorrectness(
-  loadedMems: Mem[],
+  loadedMems: ProvenanceMem[],
   activeChunkIds: Set<string>,
 ): number {
   for (const mem of loadedMems) {
@@ -151,9 +201,11 @@ export function computeDedupCorrectness(
  * For rebuildOccurred=true with 2+ mems:
  *   violations = count of pairs where loadedMems[i].closedAt < loadedMems[i-1].closedAt
  *   chronologyIntegrity = 1.0 - (violations / (loadedMems.length - 1))
+ *
+ * Provenance is irrelevant for chronology: ordering check applies uniformly to all mems.
  */
 export function computeChronologyIntegrity(
-  loadedMems: Mem[],
+  loadedMems: ProvenanceMem[],
   rebuildOccurred: boolean,
 ): number {
   if (!rebuildOccurred) return 1.0;
@@ -186,7 +238,8 @@ export function computeChronologyIntegrity(
  */
 export function computeContextQualityScore(inputs: ContextQualityInputs): ContextQualityScore {
   const focusRelevance = computeFocusRelevance(
-    inputs.focus,
+    inputs.currentVec,
+    inputs.sessionVec,
     inputs.loadedMems,
     inputs.threshold,
   );
