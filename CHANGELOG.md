@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (2026-05-23)
 
 ### Changed
 - **Unified OpenRouter request construction** — every chat path (`prompt`, `ask`, `promptWithTools`, background summarization) now assembles its request body through a single canonical builder, so structured output, provider routing, and the output-token cap apply uniformly. Previously each method built the body differently and only `ask()` honored the configured `responseFormat`.
