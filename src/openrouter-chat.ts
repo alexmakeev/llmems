@@ -183,6 +183,8 @@ const DEFAULT_MODEL = 'google/gemini-2.5-flash';
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_MAX_RETRIES = 5;
 const OPENROUTER_RETRYABLE_STATUSES = new Set([429, 500, 502, 503]);
+/** Upper bound on tokens the model may emit in a single completion. */
+const MAX_OUTPUT_TOKENS = 32768;
 
 /** Response format for structured JSON output from OpenRouter */
 interface ResponseFormat {
@@ -191,6 +193,50 @@ interface ResponseFormat {
     name: string;
     strict: boolean;
     schema: Record<string, unknown>;
+  };
+}
+
+/**
+ * Recursively enforce OpenAI/OpenRouter strict-mode compatibility on a
+ * JSON-Schema node. Strict mode requires that every object node declares
+ * `additionalProperties: false` and lists ALL of its properties in `required`.
+ * Also drops the `$schema` metadata key, which is not a constraint.
+ *
+ * This is a single universal transform applied to every node — not a
+ * special-case patch for one shape.
+ */
+function enforceStrictJsonSchema(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map(enforceStrictJsonSchema);
+  }
+  if (node !== null && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === '$schema') continue;
+      out[key] = enforceStrictJsonSchema(value);
+    }
+    if (out['type'] === 'object' && out['properties'] && typeof out['properties'] === 'object') {
+      out['additionalProperties'] = false;
+      out['required'] = Object.keys(out['properties'] as Record<string, unknown>);
+    }
+    return out;
+  }
+  return node;
+}
+
+/**
+ * Convert a configured Zod schema into a strict json_schema wire
+ * `ResponseFormat`, guaranteeing OpenAI/OpenRouter strict-mode compatibility.
+ */
+function buildStrictResponseFormat(schema: z.ZodSchema): ResponseFormat {
+  const jsonSchema = enforceStrictJsonSchema(z.toJSONSchema(schema)) as Record<string, unknown>;
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: 'response',
+      strict: true,
+      schema: jsonSchema,
+    },
   };
 }
 
@@ -561,8 +607,14 @@ export class OpenRouterChat {
       { role: 'user', content: question },
     ];
 
-    // 5. Call LLM without JSON schema format — plain text response
-    const result = await this.callOpenRouter(askSystemContent, messages, undefined, 0);
+    // 5. Call LLM. When a response format is configured, forward a strict
+    //    json_schema so the model emits raw JSON (no ```json fences) and the
+    //    provider is required to honor the schema. Always cap output tokens so
+    //    long structured answers are not truncated.
+    const responseFormat = this.responseFormat?.schema
+      ? buildStrictResponseFormat(this.responseFormat.schema)
+      : undefined;
+    const result = await this.callOpenRouter(askSystemContent, messages, responseFormat, 0, MAX_OUTPUT_TOKENS);
     if (!result.ok) {
       throw new Error(`ask() failed: ${result.error.message}`);
     }
@@ -1161,7 +1213,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
       model: this.model,
       messages,
       tools,
-      max_tokens: 32768,
+      max_tokens: MAX_OUTPUT_TOKENS,
     };
 
     let lastError: string | null = null;
@@ -1330,6 +1382,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     messages: Array<{ role: string; content: string }>,
     responseFormat?: ResponseFormat,
     temperature?: number,
+    maxTokens?: number,
   ): Promise<Result<string, MemoryError>> {
     const startTime = Date.now();
     const callType = this.debugLog ? this.inferCallType(systemContent) : '';
@@ -1346,10 +1399,18 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
 
     if (responseFormat) {
       requestBody['response_format'] = responseFormat;
+      // Structured output is only honored if the chosen provider supports the
+      // schema parameters — require_parameters forces OpenRouter to route to one
+      // that does. It belongs with response_format, never on its own.
+      requestBody['provider'] = { require_parameters: true };
     }
 
     if (temperature !== undefined) {
       requestBody['temperature'] = temperature;
+    }
+
+    if (maxTokens !== undefined) {
+      requestBody['max_tokens'] = maxTokens;
     }
 
     let lastError: string | null = null;
