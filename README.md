@@ -425,6 +425,49 @@ npm test           # run tests with vitest (no external services required)
 npm run test:watch
 ```
 
+## Build & Release
+
+### Build
+
+```bash
+npm run build      # runs `tsc`, emits compiled output to dist/
+```
+
+### Test
+
+```bash
+npm test           # runs the test suite with vitest (no external services required)
+```
+
+### Continuous integration
+
+`/.github/workflows/ci.yml` runs on every push to `main` and on every pull request targeting `main`. It checks out the code on Node.js 22 and runs `npm ci` → `npm run build` → `npm test`. A red CI run blocks the change.
+
+### Publishing (automated CD)
+
+Publishing is fully automated and **tag-driven** — there is no manual `npm publish` step. `/.github/workflows/publish.yml` fires whenever a tag matching `v*` is pushed to the repository. The workflow runs on Node.js 22 with the registry set to GitHub Packages (`https://npm.pkg.github.com`) and executes:
+
+1. `npm ci` — install dependencies
+2. `npm run build` — compile to `dist/`
+3. `npm test` — run the full test suite
+4. `npm publish` — publish `@alexmakeev/llmems` to GitHub Packages (auth via the workflow's `GITHUB_TOKEN`, with `packages: write` permission)
+
+If any of build/test fails, nothing is published.
+
+### Maintainer release steps
+
+To cut a new release `X.Y.Z`:
+
+1. Bump `version` in `package.json` to `X.Y.Z`.
+2. Add a new top section to `CHANGELOG.md` describing the changes.
+3. Commit the changes to `main`.
+4. Push `main`: `git push origin main`.
+5. Create an annotated tag: `git tag -a vX.Y.Z -m "release vX.Y.Z"`.
+6. Push the tag: `git push origin vX.Y.Z`.
+7. The `publish.yml` workflow runs automatically and publishes the package.
+
+> **Do not run `npm publish` manually.** Publishing is handled exclusively by the tag-driven CD pipeline. The package version on GitHub Packages cannot be overwritten, so a manual publish would conflict with — or pre-empt — the automated release.
+
 ## License
 
 MIT

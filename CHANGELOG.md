@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3 (2026-05-23)
+
+- docs: document build & release process (README + CLAUDE.md)
+- chore: no functional changes — first validation of the tag-driven CD publish pipeline
+
 ## 0.3.2 (2026-05-23)
 
 ### Changed
