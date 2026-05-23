@@ -197,10 +197,57 @@ interface ResponseFormat {
 }
 
 /**
+ * Widen a JSON-Schema property node so it also permits `null`, unless it
+ * already does. Used when an OPTIONAL property is promoted into `required`
+ * for strict mode: "absent" must remain expressible, which strict mode maps
+ * to an explicit null value.
+ *
+ * - `{ type: "T" }`            → `{ type: ["T", "null"] }`
+ * - `{ type: ["A", "B"] }`     → `{ type: ["A", "B", "null"] }` (if no null yet)
+ * - `{ anyOf: [...] }`         → append `{ type: "null" }` branch (if none yet)
+ * - any other node (`$ref`/composite) → wrap in `anyOf: [<node>, { type: "null" }]`
+ * - already-nullable node       → returned unchanged
+ */
+function widenToNullable(node: Record<string, unknown>): Record<string, unknown> {
+  const type = node['type'];
+
+  // Single primitive type → array including "null".
+  if (typeof type === 'string') {
+    if (type === 'null') return node;
+    return { ...node, type: [type, 'null'] };
+  }
+
+  // Array of types → add "null" if missing.
+  if (Array.isArray(type)) {
+    if (type.includes('null')) return node;
+    return { ...node, type: [...type, 'null'] };
+  }
+
+  // anyOf union → add a null branch if missing.
+  if (Array.isArray(node['anyOf'])) {
+    const branches = node['anyOf'] as Array<Record<string, unknown>>;
+    const hasNull = branches.some((b) => {
+      const t = b['type'];
+      return Array.isArray(t) ? t.includes('null') : t === 'null';
+    });
+    if (hasNull) return node;
+    return { ...node, anyOf: [...branches, { type: 'null' }] };
+  }
+
+  // $ref or other composite with no direct type → wrap in an anyOf null union.
+  return { anyOf: [node, { type: 'null' }] };
+}
+
+/**
  * Recursively enforce OpenAI/OpenRouter strict-mode compatibility on a
  * JSON-Schema node. Strict mode requires that every object node declares
  * `additionalProperties: false` and lists ALL of its properties in `required`.
  * Also drops the `$schema` metadata key, which is not a constraint.
+ *
+ * Optional properties (present in `properties` but absent from the original
+ * `required`) are promoted into `required` AND widened to allow `null`, so the
+ * "field omitted" case stays expressible under strict mode. Already-nullable
+ * and already-required properties are left untouched.
  *
  * This is a single universal transform applied to every node — not a
  * special-case patch for one shape.
@@ -216,8 +263,19 @@ function enforceStrictJsonSchema(node: unknown): unknown {
       out[key] = enforceStrictJsonSchema(value);
     }
     if (out['type'] === 'object' && out['properties'] && typeof out['properties'] === 'object') {
+      const properties = out['properties'] as Record<string, Record<string, unknown>>;
+      const originalRequired = new Set(Array.isArray(out['required']) ? (out['required'] as string[]) : []);
+
+      // Strict mode: every property must be required. Properties that were
+      // optional get their type widened to allow null so omission stays valid.
+      for (const propKey of Object.keys(properties)) {
+        if (!originalRequired.has(propKey)) {
+          properties[propKey] = widenToNullable(properties[propKey]!);
+        }
+      }
+
       out['additionalProperties'] = false;
-      out['required'] = Object.keys(out['properties'] as Record<string, unknown>);
+      out['required'] = Object.keys(properties);
     }
     return out;
   }
@@ -291,47 +349,6 @@ type BackgroundResult = {
   topics: { summary: string; chunkIds: string[]; embeddings: TopicEmbeddings; vocabulary: { term: string; count: number }[] }[];
   tailChunkIds: string[];
   newGeneralSummary: string | null;
-};
-
-/** JSON schema for background summarization response */
-const BACKGROUND_SUMMARIZATION_FORMAT: ResponseFormat = {
-  type: 'json_schema',
-  json_schema: {
-    name: 'background_summarization',
-    strict: true,
-    schema: {
-      type: 'object',
-      properties: {
-        topics: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              summary: { type: 'string' },
-              chunkIds: { type: 'array', items: { type: 'string' } },
-              vocabulary: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    term: { type: 'string' },
-                    count: { type: 'integer' },
-                  },
-                  required: ['term', 'count'],
-                  additionalProperties: false,
-                },
-              },
-            },
-            required: ['summary', 'chunkIds', 'vocabulary'],
-            additionalProperties: false,
-          },
-        },
-        tailChunkIds: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['topics', 'tailChunkIds'],
-      additionalProperties: false,
-    },
-  },
 };
 
 /** System prompt for the chat assistant (plain text, no topic detection) */
@@ -535,7 +552,7 @@ export class OpenRouterChat {
     const effectiveSystem = this.responseFormat?.systemInstructions
       ? systemContent + '\n\n' + this.responseFormat.systemInstructions
       : systemContent;
-    const apiResult = await this.callOpenRouter(effectiveSystem, finalMessages, undefined, 0);
+    const apiResult = await this.callOpenRouter(effectiveSystem, finalMessages, 0);
     if (!apiResult.ok) {
       return err(apiResult.error);
     }
@@ -607,14 +624,10 @@ export class OpenRouterChat {
       { role: 'user', content: question },
     ];
 
-    // 5. Call LLM. When a response format is configured, forward a strict
-    //    json_schema so the model emits raw JSON (no ```json fences) and the
-    //    provider is required to honor the schema. Always cap output tokens so
-    //    long structured answers are not truncated.
-    const responseFormat = this.responseFormat?.schema
-      ? buildStrictResponseFormat(this.responseFormat.schema)
-      : undefined;
-    const result = await this.callOpenRouter(askSystemContent, messages, responseFormat, 0, MAX_OUTPUT_TOKENS);
+    // 5. Call LLM. Structured output, provider routing, and the output-token cap
+    //    are applied uniformly by the request assembler (it reads the configured
+    //    response-format schema), so no per-call structured-output args here.
+    const result = await this.callOpenRouter(askSystemContent, messages, 0);
     if (!result.ok) {
       throw new Error(`ask() failed: ${result.error.message}`);
     }
@@ -980,8 +993,10 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     const detectionResult = await this.callOpenRouter(
       systemPrompt,
       [{ role: 'user', content: detectionPrompt }],
-      BACKGROUND_SUMMARIZATION_FORMAT,
       0, // temperature=0 for deterministic topic detection
+      // Fixed schema derived from the Zod source of truth — single source, no
+      // hand-written duplicate.
+      buildStrictResponseFormat(BackgroundSummarizationSchema),
     );
 
     if (!detectionResult.ok) {
@@ -1158,10 +1173,8 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
 
     // 4. Call OpenRouter API with tools
     const apiResult = await this.callOpenRouterWithTools(
-      [
-        { role: 'system', content: systemContent },
-        ...conversationMessages,
-      ],
+      systemContent,
+      conversationMessages,
       tools,
     );
     if (!apiResult.ok) {
@@ -1199,23 +1212,87 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
   // ---- Private helpers ----
 
   /**
-   * Call OpenRouter API with tool definitions.
-   * Separate from callOpenRouter() to avoid modifying existing callers.
+   * THE single place an OpenRouter request body is assembled. Every chat path
+   * (prompt / ask / promptWithTools / backgroundSummarize) builds its wire body
+   * here, so structured-output, provider routing, and the output-token cap are
+   * applied uniformly.
+   *
+   * Uniform rules:
+   * - always set `model`, `messages` (system prepended), and
+   *   `max_tokens = MAX_OUTPUT_TOKENS`;
+   * - if `tools` provided → set `tools` and DO NOT set `response_format`
+   *   (tools and structured output are mutually exclusive — encoded here once);
+   * - else if `responseFormatOverride` provided → use it (+ provider routing);
+   * - else if a `responseFormat` schema is configured on this instance →
+   *   derive a strict json_schema from it (+ provider routing);
+   * - if `temperature` is defined → set it.
+   *
+   * Setting `response_format` always pairs with `provider.require_parameters:true`
+   * so OpenRouter routes to a provider that honors the schema.
    */
-  private async callOpenRouterWithTools(
-    messages: Array<{ role: string; content: string }>,
-    tools: ToolDefinition[],
-  ): Promise<Result<{ text: string | null; toolCalls: ToolCall[] }, MemoryError>> {
-    const startTime = Date.now();
-    const callType = this.debugLog ? 'tool_call' : '';
+  private buildRequestBody(args: {
+    systemContent: string;
+    messages: Array<{ role: string; content: string }>;
+    tools?: ToolDefinition[];
+    temperature?: number;
+    responseFormatOverride?: ResponseFormat;
+  }): { body: Record<string, unknown>; responseFormat: ResponseFormat | undefined } {
+    const fullMessages: Array<{ role: string; content: string }> = [
+      { role: 'system', content: args.systemContent },
+      ...args.messages,
+    ];
 
-    const requestBody: Record<string, unknown> = {
+    const body: Record<string, unknown> = {
       model: this.model,
-      messages,
-      tools,
+      messages: fullMessages,
       max_tokens: MAX_OUTPUT_TOKENS,
     };
 
+    // Resolve which response_format (if any) applies. Tools win: when tools are
+    // present, structured output is suppressed entirely.
+    let responseFormat: ResponseFormat | undefined;
+    if (args.tools !== undefined) {
+      body['tools'] = args.tools;
+    } else if (args.responseFormatOverride !== undefined) {
+      responseFormat = args.responseFormatOverride;
+    } else if (this.responseFormat?.schema) {
+      responseFormat = buildStrictResponseFormat(this.responseFormat.schema);
+    }
+
+    if (responseFormat !== undefined) {
+      body['response_format'] = responseFormat;
+      body['provider'] = { require_parameters: true };
+    }
+
+    if (args.temperature !== undefined) {
+      body['temperature'] = args.temperature;
+    }
+
+    return { body, responseFormat };
+  }
+
+  /**
+   * Shared OpenRouter transport: POST the assembled body with retry, error
+   * handling, and debug logging, returning the raw `choices[0].message`
+   * (`{ content, tool_calls }`). Both the string-returning and tools-returning
+   * call paths are thin wrappers over this — there is one transport, one retry
+   * loop, one debug-log shape.
+   *
+   * Retry policy (unchanged): retry on retryable HTTP statuses, on network
+   * errors, and on a fully-empty response (no content AND no tool calls), up to
+   * OPENROUTER_MAX_RETRIES. On exhaustion returns the last (possibly empty)
+   * message for HTTP-OK responses, or an err for HTTP/network failures.
+   */
+  private async callOpenRouterRaw(
+    body: Record<string, unknown>,
+    debug: {
+      callType: string;
+      systemContent: string;
+      messages: Array<{ role: string; content: string }>;
+      responseFormat: ResponseFormat | undefined;
+    },
+  ): Promise<Result<{ content: string | null; toolCalls: ToolCall[] }, MemoryError>> {
+    const startTime = Date.now();
     let lastError: string | null = null;
 
     for (let attempt = 0; attempt <= OPENROUTER_MAX_RETRIES; attempt++) {
@@ -1226,7 +1303,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
             'Authorization': `Bearer ${this.apiKey}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(requestBody),
+          body: JSON.stringify(body),
         });
 
         if (!response.ok) {
@@ -1235,22 +1312,19 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
 
           if (OPENROUTER_RETRYABLE_STATUSES.has(response.status) && attempt < OPENROUTER_MAX_RETRIES) {
             const delay = Math.pow(2, attempt) * 1000;
-            this.log.warn({ attempt: attempt + 1, status: response.status, delay }, 'OpenRouter (tools): retryable error, retrying');
+            this.log.warn({ attempt: attempt + 1, status: response.status, delay }, 'OpenRouter: retryable error, retrying');
             await retrySleep(delay);
             continue;
           }
 
-          this.log.error(
-            { status: response.status, error: errorText },
-            'OpenRouter API error (with tools)',
-          );
+          this.log.error({ status: response.status, error: errorText }, 'OpenRouter API error');
 
           if (this.debugLog) {
             this.writeDebugLog({
-              callType,
-              systemContent: messages[0]?.content ?? '',
-              messages: messages.slice(1),
-              responseFormat: undefined,
+              callType: debug.callType,
+              systemContent: debug.systemContent,
+              messages: debug.messages,
+              responseFormat: debug.responseFormat,
               responseJson: null,
               responseContent: null,
               durationMs: Date.now() - startTime,
@@ -1275,49 +1349,49 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
         };
 
         const message = data.choices?.[0]?.message;
-        const content = message?.content ?? null;
+        const content = typeof message?.content === 'string' ? message.content : null;
         const toolCalls = message?.tool_calls ?? [];
-        const isEmpty = !content && toolCalls.length === 0;
+        const isEmpty = content === null && toolCalls.length === 0;
 
         if (isEmpty && attempt < OPENROUTER_MAX_RETRIES) {
           const delay = Math.pow(2, attempt) * 1000;
-          this.log.warn({ attempt: attempt + 1, delay }, 'OpenRouter (tools): empty response, retrying');
+          this.log.warn({ attempt: attempt + 1, delay }, 'OpenRouter: empty response, retrying');
           await retrySleep(delay);
           continue;
         }
 
         if (this.debugLog) {
           this.writeDebugLog({
-            callType,
-            systemContent: messages[0]?.content ?? '',
-            messages: messages.slice(1),
-            responseFormat: undefined,
+            callType: debug.callType,
+            systemContent: debug.systemContent,
+            messages: debug.messages,
+            responseFormat: debug.responseFormat,
             responseJson: data,
-            responseContent: typeof content === 'string' ? content : null,
+            responseContent: content,
             durationMs: Date.now() - startTime,
             error: null,
           });
         }
 
-        return ok({ text: typeof content === 'string' ? content : null, toolCalls });
+        return ok({ content, toolCalls });
       } catch (error) {
         lastError = String(error);
 
         if (attempt < OPENROUTER_MAX_RETRIES) {
           const delay = Math.pow(2, attempt) * 1000;
-          this.log.warn({ attempt: attempt + 1, error: lastError, delay }, 'OpenRouter (tools): network error, retrying');
+          this.log.warn({ attempt: attempt + 1, error: lastError, delay }, 'OpenRouter: network error, retrying');
           await retrySleep(delay);
           continue;
         }
 
-        this.log.error({ error }, 'OpenRouter API call with tools failed');
+        this.log.error({ error }, 'OpenRouter API call failed');
 
         if (this.debugLog) {
           this.writeDebugLog({
-            callType,
-            systemContent: messages[0]?.content ?? '',
-            messages: messages.slice(1),
-            responseFormat: undefined,
+            callType: debug.callType,
+            systemContent: debug.systemContent,
+            messages: debug.messages,
+            responseFormat: debug.responseFormat,
             responseJson: null,
             responseContent: null,
             durationMs: Date.now() - startTime,
@@ -1327,7 +1401,7 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
 
         return err({
           type: 'query' as const,
-          message: 'OpenRouter API call with tools failed',
+          message: 'OpenRouter API call failed',
         });
       }
     }
@@ -1337,6 +1411,25 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
       type: 'query' as const,
       message: `OpenRouter API failed after ${OPENROUTER_MAX_RETRIES} retries: ${lastError}`,
     });
+  }
+
+  /**
+   * Call OpenRouter with tool definitions. Thin wrapper over the unified
+   * assembler + shared transport. Returns `{ text, toolCalls }`.
+   */
+  private async callOpenRouterWithTools(
+    systemContent: string,
+    messages: Array<{ role: string; content: string }>,
+    tools: ToolDefinition[],
+  ): Promise<Result<{ text: string | null; toolCalls: ToolCall[] }, MemoryError>> {
+    const { body, responseFormat } = this.buildRequestBody({ systemContent, messages, tools });
+    const callType = this.debugLog ? 'tool_call' : '';
+
+    const result = await this.callOpenRouterRaw(body, { callType, systemContent, messages, responseFormat });
+    if (!result.ok) {
+      return err(result.error);
+    }
+    return ok({ text: result.value.content, toolCalls: result.value.toolCalls });
   }
 
   /**
@@ -1377,162 +1470,41 @@ Identify the topics. For each completed topic, provide a summary and the chunk I
     appendFileSync(this.debugLogPath, JSON.stringify(logEntry) + '\n', 'utf-8');
   }
 
+  /**
+   * Call OpenRouter and return the response text. Thin wrapper over the unified
+   * assembler + shared transport.
+   *
+   * Structured output is read from the configured `this.responseFormat` schema,
+   * unless `responseFormatOverride` supplies a fixed schema (e.g. background
+   * summarization). `max_tokens` is always applied by the assembler.
+   */
   private async callOpenRouter(
     systemContent: string,
     messages: Array<{ role: string; content: string }>,
-    responseFormat?: ResponseFormat,
     temperature?: number,
-    maxTokens?: number,
+    responseFormatOverride?: ResponseFormat,
   ): Promise<Result<string, MemoryError>> {
-    const startTime = Date.now();
+    const { body, responseFormat } = this.buildRequestBody({
+      systemContent,
+      messages,
+      ...(temperature !== undefined ? { temperature } : {}),
+      ...(responseFormatOverride !== undefined ? { responseFormatOverride } : {}),
+    });
     const callType = this.debugLog ? this.inferCallType(systemContent) : '';
 
-    const fullMessages: Array<{ role: string; content: string }> = [
-      { role: 'system', content: systemContent },
-      ...messages,
-    ];
-
-    const requestBody: Record<string, unknown> = {
-      model: this.model,
-      messages: fullMessages,
-    };
-
-    if (responseFormat) {
-      requestBody['response_format'] = responseFormat;
-      // Structured output is only honored if the chosen provider supports the
-      // schema parameters — require_parameters forces OpenRouter to route to one
-      // that does. It belongs with response_format, never on its own.
-      requestBody['provider'] = { require_parameters: true };
+    const result = await this.callOpenRouterRaw(body, { callType, systemContent, messages, responseFormat });
+    if (!result.ok) {
+      return err(result.error);
     }
 
-    if (temperature !== undefined) {
-      requestBody['temperature'] = temperature;
+    if (result.value.content === null) {
+      return err({
+        type: 'query' as const,
+        message: 'OpenRouter API returned no content in response',
+      });
     }
 
-    if (maxTokens !== undefined) {
-      requestBody['max_tokens'] = maxTokens;
-    }
-
-    let lastError: string | null = null;
-
-    for (let attempt = 0; attempt <= OPENROUTER_MAX_RETRIES; attempt++) {
-      try {
-        const response = await fetch(OPENROUTER_API_URL, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          lastError = `HTTP ${response.status}: ${errorText}`;
-
-          if (OPENROUTER_RETRYABLE_STATUSES.has(response.status) && attempt < OPENROUTER_MAX_RETRIES) {
-            const delay = Math.pow(2, attempt) * 1000;
-            this.log.warn({ attempt: attempt + 1, status: response.status, delay }, 'OpenRouter: retryable error, retrying');
-            await retrySleep(delay);
-            continue;
-          }
-
-          this.log.error(
-            { status: response.status, error: errorText },
-            'OpenRouter API error',
-          );
-
-          if (this.debugLog) {
-            this.writeDebugLog({
-              callType,
-              systemContent,
-              messages,
-              responseFormat,
-              responseJson: null,
-              responseContent: null,
-              durationMs: Date.now() - startTime,
-              error: lastError,
-            });
-          }
-
-          return err({
-            type: 'query' as const,
-            message: `OpenRouter API error (${response.status})`,
-          });
-        }
-
-        const data = await response.json() as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-
-        const content = data.choices?.[0]?.message?.content;
-        const isEmpty = typeof content !== 'string';
-
-        if (isEmpty && attempt < OPENROUTER_MAX_RETRIES) {
-          const delay = Math.pow(2, attempt) * 1000;
-          this.log.warn({ attempt: attempt + 1, delay }, 'OpenRouter: empty response, retrying');
-          await retrySleep(delay);
-          continue;
-        }
-
-        if (this.debugLog) {
-          this.writeDebugLog({
-            callType,
-            systemContent,
-            messages,
-            responseFormat,
-            responseJson: data,
-            responseContent: typeof content === 'string' ? content : null,
-            durationMs: Date.now() - startTime,
-            error: null,
-          });
-        }
-
-        if (typeof content !== 'string') {
-          return err({
-            type: 'query' as const,
-            message: 'OpenRouter API returned no content in response',
-          });
-        }
-
-        return ok(content);
-      } catch (error) {
-        lastError = String(error);
-
-        if (attempt < OPENROUTER_MAX_RETRIES) {
-          const delay = Math.pow(2, attempt) * 1000;
-          this.log.warn({ attempt: attempt + 1, error: lastError, delay }, 'OpenRouter: network error, retrying');
-          await retrySleep(delay);
-          continue;
-        }
-
-        this.log.error({ error }, 'OpenRouter API call failed');
-
-        if (this.debugLog) {
-          this.writeDebugLog({
-            callType,
-            systemContent,
-            messages,
-            responseFormat,
-            responseJson: null,
-            responseContent: null,
-            durationMs: Date.now() - startTime,
-            error: lastError,
-          });
-        }
-
-        return err({
-          type: 'query' as const,
-          message: 'OpenRouter API call failed',
-        });
-      }
-    }
-
-    // Should not reach here, but safety fallback
-    return err({
-      type: 'query' as const,
-      message: `OpenRouter API failed after ${OPENROUTER_MAX_RETRIES} retries: ${lastError}`,
-    });
+    return ok(result.value.content);
   }
 }
 
