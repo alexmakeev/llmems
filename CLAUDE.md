@@ -40,3 +40,23 @@ Rules:
 
 - `origin` is canonical. `gitea` is a diverged remote — do not push to it.
 - Releases flow through `main` + a `vX.Y.Z` tag (see Release Process).
+
+## Repository Topology — llmems ↔ Altme
+
+### llmems library (this repo)
+- Canonical remote: `origin` = `git@github.com:alexmakeev/llmems.git` (GitHub). Only remote — `gitea` remote was removed 2026-05-23.
+- Publishes to GitHub Packages (`npm.pkg.github.com`), scope `@alexmakeev`, package `@alexmakeev/llmems`.
+- CD: `.github/workflows/publish.yml` triggers on `v*` tag push → CI → `npm publish` (GitHub Packages, `secrets.GITHUB_TOKEN`). Never run `npm publish` manually.
+- Local layout: bare repo at `/home/alexmak/llmems/` + git worktrees inside it.
+
+### Altme bot ("Altbot") — separate project
+- **Separate repo**: `gitea.oneln.ru`, org `llm-agents`, repo `altme-bot` (altme-bot.git).
+- DEV/PROD deploy from that repo via Dokploy — NOT from any local `~/llmems/` directory.
+- llmems is a **library consumed by Altme**. They are two different projects, two different repos.
+- Constraint: do NOT modify altme-bot code/commits/deploys. For altme-bot issues → write a bug-report, never touch its code directly.
+
+### Archived dead monolith
+- The old gitea repo `llm-agents/llmems` (the Altme monolith, not the library) was **renamed → `altme-monolith-legacy` and archived** (read-only) on 2026-05-23. Old URL 301-redirects.
+- It is DEAD: not the library, not the live bot. Do NOT restore it, deploy from it, or reference it as active.
+
+These are settled facts as of 2026-05-23. The old monolith is archived & dead; Altme lives in its own `altme-bot` repo. Do NOT re-investigate this separation.
