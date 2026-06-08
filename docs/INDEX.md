@@ -49,3 +49,7 @@ Sub-beads of llmems-xcz: xcz.1 (mem typing), xcz.2 (hierarchical mems), xcz.3 (g
 2. Restore recall gold-set (llmems-dnh), then run Phase 2 uplift measurement (llmems-xcz.4).
 3. Security: remove hardcoded dev-DB password (llmems-a9r).
 4. See `bd list -s priority` for current priority order.
+
+## Further Reading
+
+- [Competitors & Prior Art](competitors.md) — landscape of LLM-agent memory solutions, build-vs-adopt analysis, and benchmarks to measure against.
