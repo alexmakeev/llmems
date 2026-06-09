@@ -25,7 +25,7 @@ fragment (user turn, file line, anything)
      ▼
   ContextFactory.remember(sessionId, fragment, contextId)
      ├── store chunk as raw fragment (mem_chunk, active)
-     ├── shift session focus vector (EMA over recent embeddings)
+     ├── compute per-turn focus vector (fresh normalized embedding of this fragment)
      └── load newly-relevant mems into session cache (ANN search, dedup)
               ↕ background (count-based trigger, default 16 chunks)
          BackgroundIndexer + ILLMSummarizer

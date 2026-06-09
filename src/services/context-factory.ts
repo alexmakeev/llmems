@@ -9,7 +9,7 @@
 //   - SessionWorkingState type
 //   - ContextFactory class with in-memory Map<sessionId, state>
 //   - Lazy session creation on first access, session isolation
-//   - remember(): rawTail append, EMA focus shift, dedup mem load, soft-rebuild trigger
+//   - remember(): rawTail append, fresh per-turn focus vector, dedup mem load, soft-rebuild trigger
 //   - softRebuild(): drop stale mems by cosine-sim-to-focus, re-sort chronologically
 //   - getCurrentContext(): serialize session state to sloyonka text (no DB calls)
 
@@ -320,8 +320,8 @@ export class ContextFactory {
    *
    * Steps (in order):
    *   1. Append fragment to session.rawTail.
-   *   2. Embed the fragment and shift session.focus via EMA.
-   *   3. Search for relevant mems using the updated focus.
+   *   2. Embed the fragment into a fresh per-turn currentVec (normalized; no EMA accumulation).
+   *   3. Search for relevant mems using currentVec.
    *   4. Apply dedup filter (Steps 4a+4b below) and push survivors into loaded.
    *   5. Increment oooCounter by survivor count.
    *

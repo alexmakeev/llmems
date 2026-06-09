@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+The pivot to **pure abstract memory**. llmems no longer calls any LLM for chat, builds prompts, or generates responses — it manages long-term memory and projects it into a ready-to-prepend context block. Generation, system prompt, and persona are now entirely the consumer's responsibility (see `docs/building-a-chat.md`).
+
+### BREAKING
+- **Removed `OpenRouterChat`** and the entire LLM-calling chat layer (`prompt`, `ask`, `promptWithTools`, `dryRun`). The package no longer performs any chat/generation. Consumers importing `OpenRouterChat` must move that logic into their own code. This is a hard, one-way API break (acceptable under 0.x semver, and the documented intent of v0.4.0).
+
+### Added
+- **`ContextFactory`** (`src/services/context-factory.ts`) — the new entry point with a two-function API:
+  - `remember(sessionId, fragment, contextId)` — mutates per-session working state: raw-tail append, fresh per-turn focus vector (the fragment's normalized embedding, used directly for ANN recall and soft-rebuild scoring — no EMA accumulation), dedup mem-load, soft-rebuild trigger, and fire-and-forget background indexing.
+  - `getCurrentContext(sessionId)` — pure projection (no DB calls) into a single prompt-block string: stable backbone prefix → "Loaded from memory:" marker → dynamic mems (timestamped `<mem ts="…">` XML) → raw tail. The stable prefix is prompt-cache-friendly.
+- **`BackgroundIndexer`** (`src/services/background-indexer.ts`) — standalone raw-chunk → closed-mem converter; count-based trigger (default 16 active chunks); fire-and-forget from `remember()`.
+- **`LLMSummarizer`** (`src/services/llm-summarizer.ts`) — standalone OpenAI-compatible summarizer (retry policy, deterministic temperature) implementing the `ILLMSummarizer` port.
+- **Context quality metric** (`src/services/context-metric.ts`) — `computeContextQualityScore` plus `computeFocusRelevance` / `computeDedupCorrectness` / `computeChronologyIntegrity`; pure, deterministic, no IO.
+- **`IVectorMemStore`** — narrower store interface required by `ContextFactory` (adds `searchMemsByVector` + `getActiveChunkIds`). `PostgresMemStore` satisfies it; `InMemoryMemStore` does not, by design (compile-time enforced).
+- **Soft cache rebuild** — `softRebuild` prunes the working set to `keepRatio` (default 70%) once `rebuildThreshold` (default 30) out-of-order appends accumulate; survivors are re-sorted chronologically.
+- **Session/theme vector** — backbone recall over a normalized mean of recent closed-mem embeddings (`sessionVecN`, default 100).
+
+### Changed
+- **Public barrel (`src/index.ts`) rewritten** — now exports `ContextFactory`, `BackgroundIndexer`, `LLMSummarizer`, `MemManager`, store classes, `computeContextQualityScore`, `Result`/`ok`/`err`, and `memoryModuleConfigSchema`. `OpenRouterChat` is no longer exported.
+- **Docs** — added `docs/vision.md`, `docs/building-a-chat.md`, `docs/baseline-metric.md`; README rewritten for the v0.4.0 API.
+
 ## 0.3.3 (2026-05-23)
 
 - docs: document build & release process (README + CLAUDE.md)

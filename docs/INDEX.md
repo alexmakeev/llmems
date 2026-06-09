@@ -18,7 +18,7 @@ remote, renamed + archived dead monolith → `altme-monolith-legacy`.
 
 ## v0.4.0 core (from feature/context-factory)
 
-- **ContextFactory** (`src/services/context-factory.ts`) — `remember()` (rawTail append + EMA focus shift +
+- **ContextFactory** (`src/services/context-factory.ts`) — `remember()` (rawTail append + per-turn focus vector +
   dedup mem-load + softRebuild + fire-and-forget indexing) and `getCurrentContext()` (pure projection:
   stable backbone block → "Loaded from memory:" marker → dynamic mems → raw tail). Cache-friendly stable prefix.
 - **BackgroundIndexer** (`src/services/background-indexer.ts`) — raw chunks → closed mems, count-based trigger.
@@ -49,10 +49,13 @@ remote, renamed + archived dead monolith → `altme-monolith-legacy`.
 
 - `main` — v0.4.0 release line (this branch).
 - `feature/context-factory` — merged into main (kept for history).
-- `fix/ask-response-format` — DROPPED (was 0 ahead of main; ask() fix already shipped in v0.3.3; the code it
-  patched, `openrouter-chat.ts`, is deleted in v0.4.0).
-- `experiment/axis-projections` — PARKED (graph/axis module; graph bet paused, re-evaluate in Phase 3).
-- `experiment/graph-memory` — PARKED (superseded by feature's vision.md).
+- `fix/ask-response-format` (was d8b0d4a) — DELETED (was an ancestor of main, 0 ahead; the ask() fix already
+  shipped in v0.3.3, and the code it patched — `openrouter-chat.ts` — is deleted in v0.4.0, so nothing to port).
+- `experiment/axis-projections` (b08f870, 23 commits ahead of main) — **PARKED, do NOT delete.** Holds the
+  graph/axis-projection module (not on the release line). The graph bet is paused; keep as reference, re-evaluate
+  in Phase 3 on real benchmark data.
+- `experiment/graph-memory` (2fcab69, 1 commit ahead) — **PARKED, do NOT delete.** Superseded by feature's
+  `vision.md`; behind axis-projections. Likely drop later, but kept for now.
 
 ## Active Beads
 
