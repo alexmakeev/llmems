@@ -14,7 +14,7 @@ export const memoryModuleConfigSchema = z.object({
   embedding: z.object({
     apiKey: z.string().min(1),
     baseUrl: z.string().url().optional(),
-    model: z.string().default('qwen/qwen3-embedding-8b'),
+    model: z.string().default('openai/text-embedding-3-small'),
   }),
 
   // LLM extractor (flat extraction pipeline)
@@ -52,7 +52,7 @@ export const memoryModuleConfigSchema = z.object({
   useEntityNodes: z.boolean().default(true),
 
   /**
-   * Mem store backend for OpenRouterChat.
+   * Mem store backend for the memory module.
    * - 'memory' (default): InMemoryMemStore — mems live only in process memory
    * - 'postgres': PostgresMemStore — mems persisted in PostgreSQL
    *

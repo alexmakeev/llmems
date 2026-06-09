@@ -51,16 +51,6 @@ export interface RecallResult {
   edges: RecallEdge[];
 }
 
-/**
- * A single message entry in a conversation session.
- * Defined here to avoid a runtime dependency on the session module.
- */
-export interface MessageEntry {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp?: string;
-}
-
 // ── Mem Management Types ──────────────────────────────────────────
 
 /**
@@ -80,11 +70,29 @@ export interface Mem {
   summary: string;
   chunkIds: string[];
   embeddings: {
-    full: number[];    // 1024 dims
-    compact: number[]; // 256 dims
-    micro: number[];   // 64 dims
+    full: number[];    // 1536 dims
   };
   closedAt: Date;
+}
+
+// ── Embedding Service Types ───────────────────────────────────────
+
+/**
+ * Result type returned by IEmbeddingService.embed().
+ * The `compact` field holds the embedding vector (1536-dim in production).
+ * The field name "compact" is a historical artefact from an earlier multi-resolution
+ * embedding design. Rename is deferred to bead llmems-fqx.
+ */
+export interface EmbeddingValue {
+  compact: number[];
+}
+
+/**
+ * Port: Embedding Service — generates embedding vectors for text.
+ * Used by ContextFactory (focus shift) and BackgroundIndexer (topic embeddings).
+ */
+export interface IEmbeddingService {
+  embed(text: string): Promise<import('./shared/result.js').Result<EmbeddingValue, { message: string }>>;
 }
 
 /**
@@ -101,17 +109,51 @@ export interface IMemStore {
   updateGeneralSummary(summary: string, contextId: string): Promise<void>;
   removeOldestClosedMem(contextId: string): Promise<void>;
   getLastClosedMem(contextId: string): Promise<Mem | null>;
-  getBehaviorInstructions?(contextId: string): Promise<string>;
-  setBehaviorInstructions?(instructions: string, contextId: string): Promise<void>;
   getEstablishedVocabulary?(contextId: string, minCount?: number): Promise<VocabularyTerm[]>;
   getVocabulary?(contextId: string): Promise<VocabularyTerm[]>;
+  /**
+   * ANN vector search over mems.embedding (1536-dim) via HNSW cosine index.
+   * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
+   */
+  searchMemsByVector?(vector: number[], k: number, contextId: string): Promise<Mem[]>;
+  /**
+   * Returns the set of mem_chunk IDs that are still in 'active' status (raw-present signal).
+   * Used by ContextFactory dedup: a mem whose chunkIds overlap this set should not be loaded.
+   */
+  getActiveChunkIds?(contextId: string): Promise<Set<string>>;
   buildMemContext(contextId: string): Promise<MemContextData>;
   applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[] }; vocabulary?: { term: string; count: number }[] }[],
     tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
   ): Promise<void>;
+}
+
+/**
+ * Narrower store interface required by ContextFactory.
+ *
+ * ContextFactory needs vector search to function correctly — without it, remember()
+ * would silently load zero mems, violating the one-path rule. By requiring these
+ * methods at the constructor boundary, the type system enforces correctness.
+ *
+ * IMemStore keeps searchMemsByVector and getActiveChunkIds optional so that
+ * InMemoryMemStore (which only implements the base interface) still satisfies
+ * IMemStore. ContextFactory explicitly requires the narrower IVectorMemStore.
+ *
+ * PostgresMemStore satisfies IVectorMemStore. InMemoryMemStore does NOT (correct).
+ */
+export interface IVectorMemStore extends IMemStore {
+  /**
+   * ANN vector search over mems.embedding (1536-dim) via HNSW cosine index.
+   * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
+   */
+  searchMemsByVector(vector: number[], k: number, contextId: string): Promise<Mem[]>;
+  /**
+   * Returns the set of mem_chunk IDs that are still in 'active' status (raw-present signal).
+   * Used by ContextFactory dedup: a mem whose chunkIds overlap this set should not be loaded.
+   */
+  getActiveChunkIds(contextId: string): Promise<Set<string>>;
 }
 
 /**

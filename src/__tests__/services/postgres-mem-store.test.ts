@@ -254,8 +254,6 @@ describe('PostgresMemStore', () => {
       summary,
       chunk_ids: [1, 2],
       embedding: '[0.1,0.2]',
-      embedding_compact: '[0.3]',
-      embedding_micro: '[0.4]',
       closed_at: new Date('2025-01-01T10:00:00Z'),
     });
 
@@ -331,16 +329,12 @@ describe('PostgresMemStore', () => {
           summary: 's',
           chunk_ids: [],
           embedding: '[1.0,2.0,3.0]',
-          embedding_compact: '[4.0,5.0]',
-          embedding_micro: '[6.0]',
           closed_at: new Date(),
         }],
       });
 
       const mems = await store.getClosedMems(ctx);
       expect(mems[0]!.embeddings.full).toEqual([1, 2, 3]);
-      expect(mems[0]!.embeddings.compact).toEqual([4, 5]);
-      expect(mems[0]!.embeddings.micro).toEqual([6]);
     });
   });
 
@@ -455,8 +449,6 @@ describe('PostgresMemStore', () => {
           summary: 'Last mem summary',
           chunk_ids: [10, 11],
           embedding: '[0.1]',
-          embedding_compact: '[0.2]',
-          embedding_micro: '[0.3]',
           closed_at: closedAt,
         }],
       });
@@ -498,7 +490,7 @@ describe('PostgresMemStore', () => {
       mockPool.query.mockImplementation(async (sql: string) => {
         if (sql.includes("status = 'active'")) return { rows: [] };    // getActiveChunks
         if (sql.includes('FROM memstores WHERE name')) return { rows: [{ general_summary: '' }] }; // getGeneralSummary
-        if (sql.includes('embedding_compact')) return { rows: [] };    // getClosedMems
+        if (sql.includes('FROM mems')) return { rows: [] };    // getClosedMems
         return { rows: [] };
       });
 
@@ -516,8 +508,6 @@ describe('PostgresMemStore', () => {
         summary,
         chunk_ids: [],
         embedding: '[]',
-        embedding_compact: '[]',
-        embedding_micro: '[]',
         closed_at: closedAt,
       });
 
@@ -536,7 +526,7 @@ describe('PostgresMemStore', () => {
           // getGeneralSummary — must check BEFORE 'FROM mems' (memstores contains mems)
           return { rows: [{ general_summary: 'general' }] };
         }
-        if (sql.includes('embedding_compact')) {
+        if (sql.includes('FROM mems')) {
           // getClosedMems — DB returns DESC (newest first), store reverses to chrono
           return { rows: [makeMem(3, 'S3', t3), makeMem(2, 'S2', t2), makeMem(1, 'S1', t1)] };
         }
@@ -567,7 +557,7 @@ describe('PostgresMemStore', () => {
       ]);
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic 1', chunkIds: ['1', '2'], embeddings: { full: [0.1], compact: [0.2], micro: [0.3] } }],
+        [{ summary: 'Topic 1', chunkIds: ['1', '2'], embeddings: { full: [0.1] } }],
         [],
         null,
         ctx,
@@ -590,7 +580,7 @@ describe('PostgresMemStore', () => {
 
       await expect(
         store2.applyBackgroundResult(
-          [{ summary: 'Topic 1', chunkIds: ['1'], embeddings: { full: [], compact: [], micro: [] } }],
+          [{ summary: 'Topic 1', chunkIds: ['1'], embeddings: { full: [] } }],
           [],
           null,
           ctx,
@@ -613,7 +603,7 @@ describe('PostgresMemStore', () => {
       ]);
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [] } }],
         [],
         'New general summary',
         ctx,
@@ -643,7 +633,7 @@ describe('PostgresMemStore', () => {
       ]);
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [] } }],
         [],
         null,
         ctx,
@@ -667,8 +657,8 @@ describe('PostgresMemStore', () => {
 
       await store.applyBackgroundResult(
         [
-          { summary: 'Mem 1', chunkIds: ['1', '2'], embeddings: { full: [], compact: [], micro: [] } },
-          { summary: 'Mem 2', chunkIds: ['3', '4'], embeddings: { full: [], compact: [], micro: [] } },
+          { summary: 'Mem 1', chunkIds: ['1', '2'], embeddings: { full: [] } },
+          { summary: 'Mem 2', chunkIds: ['3', '4'], embeddings: { full: [] } },
         ],
         ['2'], // tailChunkIds — informational only, all chunkIds still get archived
         null,
@@ -700,11 +690,9 @@ describe('PostgresMemStore', () => {
       ]);
 
       const full = [0.1, 0.2, 0.3];
-      const compact = [0.4, 0.5];
-      const micro = [0.6];
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic', chunkIds: ['1'], embeddings: { full, compact, micro } }],
+        [{ summary: 'Topic', chunkIds: ['1'], embeddings: { full } }],
         [],
         null,
         ctx,
@@ -712,8 +700,6 @@ describe('PostgresMemStore', () => {
 
       const pgvectorMod = await import('pgvector/pg');
       expect(pgvectorMod.default.toSql).toHaveBeenCalledWith(full);
-      expect(pgvectorMod.default.toSql).toHaveBeenCalledWith(compact);
-      expect(pgvectorMod.default.toSql).toHaveBeenCalledWith(micro);
     });
 
     it('passes null for empty embeddings (not toSql)', async () => {
@@ -727,7 +713,7 @@ describe('PostgresMemStore', () => {
       ]);
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic', chunkIds: [], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Topic', chunkIds: [], embeddings: { full: [] } }],
         [],
         null,
         ctx,
@@ -740,11 +726,9 @@ describe('PostgresMemStore', () => {
       expect(insertCall).toBeDefined();
 
       const params = insertCall![1] as unknown[];
-      // params: [memstoreId, summary, chunkIdsInt, embeddingFull, embeddingCompact, embeddingMicro]
-      // embedding params (index 3, 4, 5) should be null for empty arrays
+      // params: [memstoreId, summary, chunkIdsInt, embeddingFull]
+      // embedding param (index 3) should be null for empty array
       expect(params[3]).toBeNull();
-      expect(params[4]).toBeNull();
-      expect(params[5]).toBeNull();
     });
 
     it('releases the client after COMMIT', async () => {
@@ -777,7 +761,7 @@ describe('PostgresMemStore', () => {
         [{
           summary: 'Topic with vocab',
           chunkIds: ['1'],
-          embeddings: { full: [], compact: [], micro: [] },
+          embeddings: { full: [] },
           vocabulary: [{ term: 'TypeScript', count: 3 }],
         }],
         [],
@@ -816,7 +800,7 @@ describe('PostgresMemStore', () => {
       ]);
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [], compact: [], micro: [] }, vocabulary: [] }],
+        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [] }, vocabulary: [] }],
         [],
         null,
         ctx,
@@ -838,7 +822,7 @@ describe('PostgresMemStore', () => {
       ]);
 
       await store.applyBackgroundResult(
-        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [], compact: [], micro: [] } }],
+        [{ summary: 'Topic', chunkIds: ['5'], embeddings: { full: [] } }],
         [],
         null,
         ctx,
@@ -846,6 +830,160 @@ describe('PostgresMemStore', () => {
 
       const sqlCalls = mockClient.query.mock.calls.map(c => c[0] as string);
       expect(sqlCalls.some(s => s.includes('INSERT INTO vocabulary'))).toBe(false);
+    });
+  });
+
+  // ── searchMemsByVector ────────────────────────────────────────────────────
+
+  describe('searchMemsByVector', () => {
+    const makeMemRow = (id: number, summary: string, closedAt: Date) => ({
+      id,
+      summary,
+      chunk_ids: [id * 10],
+      embedding: `[0.${id},0.${id}]`,
+      closed_at: closedAt,
+    });
+
+    it('issues ORDER BY embedding <=> $vector LIMIT k scoped to memstore', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const vector = [0.1, 0.2, 0.3];
+      await store.searchMemsByVector(vector, 5, ctx);
+
+      const [sql, params] = mockPool.query.mock.calls[0]!;
+      expect(sql).toContain('ORDER BY embedding <=>');
+      expect(sql).toContain('LIMIT');
+      expect(sql).toContain('WHERE memstore_id');
+      // k=5 should appear in params
+      expect(params).toContain(5);
+      // memstore_id=42 should appear in params
+      expect(params).toContain(42);
+    });
+
+    it('returns mapped Mem rows in DB order', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      const t1 = new Date('2025-01-01T10:00:00Z');
+      const t2 = new Date('2025-01-02T10:00:00Z');
+
+      mockPool.query.mockResolvedValue({
+        rows: [makeMemRow(3, 'closest', t2), makeMemRow(1, 'second', t1)],
+      });
+
+      const results = await store.searchMemsByVector([0.5, 0.5], 2, ctx);
+
+      expect(results).toHaveLength(2);
+      expect(results[0]!.id).toBe('3');
+      expect(results[0]!.summary).toBe('closest');
+      expect(results[1]!.id).toBe('1');
+      expect(results[1]!.summary).toBe('second');
+    });
+
+    it('returns empty array when no mems exist', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const results = await store.searchMemsByVector([1.0], 10, ctx);
+      expect(results).toHaveLength(0);
+    });
+
+    it('passes vector as pgvector-formatted param', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const vector = [0.1, 0.2, 0.3];
+      await store.searchMemsByVector(vector, 3, ctx);
+
+      const pgvectorMod = await import('pgvector/pg');
+      expect(pgvectorMod.default.toSql).toHaveBeenCalledWith(vector);
+    });
+
+    it('maps chunkIds to strings', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      const t = new Date('2025-01-01T10:00:00Z');
+      mockPool.query.mockResolvedValue({
+        rows: [{
+          id: 7,
+          summary: 'mem seven',
+          chunk_ids: [10, 11, 12],
+          embedding: '[0.1]',
+          closed_at: t,
+        }],
+      });
+
+      const results = await store.searchMemsByVector([0.1], 5, ctx);
+      expect(results[0]!.chunkIds).toEqual(['10', '11', '12']);
+    });
+  });
+
+  // ── getActiveChunkIds ────────────────────────────────────────────────────
+
+  describe('getActiveChunkIds', () => {
+    it('returns a Set of active chunk IDs as strings', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({
+        rows: [{ id: 1 }, { id: 5 }, { id: 99 }],
+      });
+
+      const ids = await store.getActiveChunkIds(ctx);
+
+      expect(ids).toBeInstanceOf(Set);
+      expect(ids.size).toBe(3);
+      expect(ids.has('1')).toBe(true);
+      expect(ids.has('5')).toBe(true);
+      expect(ids.has('99')).toBe(true);
+    });
+
+    it('returns empty Set when no active chunks exist', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const ids = await store.getActiveChunkIds(ctx);
+      expect(ids.size).toBe(0);
+    });
+
+    it('queries only id column with status=active filter scoped to memstore', async () => {
+      setupClientQuerySequence([
+        { rows: [] },
+        { rows: [{ id: 42 }] },
+      ]);
+
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      await store.getActiveChunkIds(ctx);
+
+      const [sql, params] = mockPool.query.mock.calls[0]!;
+      expect(sql).toContain("status = 'active'");
+      expect(sql).toContain('WHERE memstore_id');
+      expect(params).toContain(42);
     });
   });
 

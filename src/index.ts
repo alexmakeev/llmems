@@ -9,28 +9,49 @@ export { MemManager, InMemoryMemStore } from './services/mem-manager.js';
 export { PostgresMemStore } from './services/postgres-mem-store.js';
 export type {
   IMemStore,
+  IVectorMemStore,
   MemChunk,
   Mem,
   MemContextData,
   RecallNode,
   RecallEdge,
+  RecallResult,
   VocabularyTerm,
+  IEmbeddingService,
+  EmbeddingValue,
 } from './types.js';
 
 // ============================================================
-// OpenRouterChat (chat wrapper with memory + LLM inference)
+// ContextFactory (session-scoped working state management)
 // ============================================================
-export { OpenRouterChat } from './openrouter-chat.js';
+export { ContextFactory } from './services/context-factory.js';
 export type {
-  OpenRouterChatOptions,
-  ChatResponse,
-  ToolDefinition,
-  ChatResponseWithTools,
-  LLMem,
-  StoreResult,
-  MemoryError,
-  RecallMemoryResult,
-} from './openrouter-chat.js';
+  ContextFactoryConfig,
+  SessionWorkingState,
+  RawFragment,
+} from './services/context-factory.js';
+
+// ============================================================
+// BackgroundIndexer + ILLMSummarizer port (needed by ContextFactory consumers)
+// ============================================================
+export { BackgroundIndexer } from './services/background-indexer.js';
+export type { ILLMSummarizer } from './services/background-indexer.js';
+
+// ============================================================
+// LLMSummarizer — standalone concrete OpenAI-compatible summarizer
+// ============================================================
+export { LLMSummarizer } from './services/llm-summarizer.js';
+export type { LLMSummarizerConfig } from './services/llm-summarizer.js';
+
+// ============================================================
+// Context quality metric (pure, deterministic, no IO)
+// ============================================================
+export { computeContextQualityScore, computeFocusRelevance, computeDedupCorrectness, computeChronologyIntegrity } from './services/context-metric.js';
+export type {
+  ContextQualityScore,
+  ContextQualityInputs,
+  ProvenanceMem,
+} from './services/context-metric.js';
 
 // ============================================================
 // Result type utilities

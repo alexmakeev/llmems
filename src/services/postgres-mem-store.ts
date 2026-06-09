@@ -35,8 +35,6 @@ function rowToMem(row: {
   summary: string;
   chunk_ids: number[] | null;
   embedding: unknown;
-  embedding_compact: unknown;
-  embedding_micro: unknown;
   closed_at: Date;
 }): Mem {
   return {
@@ -45,8 +43,6 @@ function rowToMem(row: {
     chunkIds: (row.chunk_ids ?? []).map(String),
     embeddings: {
       full: parseVector(row.embedding),
-      compact: parseVector(row.embedding_compact),
-      micro: parseVector(row.embedding_micro),
     },
     closedAt: row.closed_at,
   };
@@ -75,7 +71,7 @@ function rowToMemChunk(row: { id: number; content: string; timestamp: Date }): M
  *
  * Schema (must exist):
  *   memstores(id, name, general_summary, created_at)
- *   mems(id, memstore_id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at)
+ *   mems(id, memstore_id, summary, chunk_ids, embedding, closed_at)
  *   mem_chunks(id, memstore_id, content, timestamp, status)
  */
 export class PostgresMemStore implements IMemStore {
@@ -166,12 +162,12 @@ export class PostgresMemStore implements IMemStore {
     const memstoreId = await this.resolveMemstoreId(contextId);
 
     const queryText = limit !== undefined
-      ? `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+      ? `SELECT id, summary, chunk_ids, embedding, closed_at
          FROM mems
          WHERE memstore_id = $1
          ORDER BY closed_at DESC
          LIMIT $2`
-      : `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+      : `SELECT id, summary, chunk_ids, embedding, closed_at
          FROM mems
          WHERE memstore_id = $1
          ORDER BY closed_at DESC`;
@@ -202,23 +198,10 @@ export class PostgresMemStore implements IMemStore {
     );
   }
 
-  async getBehaviorInstructions(contextId: string): Promise<string> {
-    const result = await this.pool.query<{ behavior_instructions: string }>(
-      `SELECT behavior_instructions FROM memstores WHERE name = $1`,
-      [contextId],
-    );
-
-    return result.rows[0]?.behavior_instructions ?? '';
-  }
-
-  async setBehaviorInstructions(instructions: string, contextId: string): Promise<void> {
-    await this.resolveMemstoreId(contextId); // ensure row exists
-
-    await this.pool.query(
-      `UPDATE memstores SET behavior_instructions = $1 WHERE name = $2`,
-      [instructions, contextId],
-    );
-  }
+  // NOTE: The `behavior_instructions` column in `memstores` is vestigial/legacy.
+  // It was used by the chat layer (OpenRouterChat) which was removed in v0.4.0.
+  // The column is intentionally left in the DB schema to avoid a destructive migration.
+  // Do NOT read/write this column from llmems — it is unused by the abstract core.
 
   async removeOldestClosedMem(contextId: string): Promise<void> {
     const memstoreId = await this.resolveMemstoreId(contextId);
@@ -239,7 +222,7 @@ export class PostgresMemStore implements IMemStore {
     const memstoreId = await this.resolveMemstoreId(contextId);
 
     const result = await this.pool.query(
-      `SELECT id, summary, chunk_ids, embedding, embedding_compact, embedding_micro, closed_at
+      `SELECT id, summary, chunk_ids, embedding, closed_at
        FROM mems
        WHERE memstore_id = $1
        ORDER BY closed_at DESC
@@ -291,7 +274,7 @@ export class PostgresMemStore implements IMemStore {
    * summary first → mems → archive chunks.
    */
   async applyBackgroundResult(
-    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[]; compact: number[]; micro: number[] }; vocabulary?: { term: string; count: number }[] }[],
+    mems: { summary: string; chunkIds: string[]; embeddings: { full: number[] }; vocabulary?: { term: string; count: number }[] }[],
     _tailChunkIds: string[],
     newGeneralSummary: string | null,
     contextId: string,
@@ -324,18 +307,12 @@ export class PostgresMemStore implements IMemStore {
         const embeddingFull = mem.embeddings.full.length > 0
           ? pgvector.toSql(mem.embeddings.full)
           : null;
-        const embeddingCompact = mem.embeddings.compact.length > 0
-          ? pgvector.toSql(mem.embeddings.compact)
-          : null;
-        const embeddingMicro = mem.embeddings.micro.length > 0
-          ? pgvector.toSql(mem.embeddings.micro)
-          : null;
 
         const memInsertResult = await client.query<{ id: number }>(
-          `INSERT INTO mems (memstore_id, summary, chunk_ids, embedding, embedding_compact, embedding_micro)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO mems (memstore_id, summary, chunk_ids, embedding)
+           VALUES ($1, $2, $3, $4)
            RETURNING id`,
-          [memstoreId, mem.summary, chunkIdsInt, embeddingFull, embeddingCompact, embeddingMicro],
+          [memstoreId, mem.summary, chunkIdsInt, embeddingFull],
         );
 
         const memId = memInsertResult.rows[0]!.id;
@@ -406,5 +383,42 @@ export class PostgresMemStore implements IMemStore {
       [memstoreId],
     );
     return result.rows.map(r => ({ term: r.term, count: r.count }));
+  }
+
+  /**
+   * ANN vector search over mems.embedding (1536-dim) via HNSW cosine index.
+   * Returns up to k Mem rows ordered by cosine distance (closest first), scoped to contextId.
+   */
+  async searchMemsByVector(vector: number[], k: number, contextId: string): Promise<Mem[]> {
+    const memstoreId = await this.resolveMemstoreId(contextId);
+    const vectorSql = pgvector.toSql(vector);
+
+    const result = await this.pool.query(
+      `SELECT id, summary, chunk_ids, embedding, closed_at
+       FROM mems
+       WHERE memstore_id = $1
+       ORDER BY embedding <=> $2
+       LIMIT $3`,
+      [memstoreId, vectorSql, k],
+    );
+
+    return result.rows.map(rowToMem);
+  }
+
+  /**
+   * Returns the set of mem_chunk IDs that are currently in 'active' status (raw-present signal).
+   * Used by ContextFactory for dedup: a mem whose chunkIds overlap this set should not be loaded.
+   */
+  async getActiveChunkIds(contextId: string): Promise<Set<string>> {
+    const memstoreId = await this.resolveMemstoreId(contextId);
+
+    const result = await this.pool.query<{ id: number }>(
+      `SELECT id
+       FROM mem_chunks
+       WHERE memstore_id = $1 AND status = 'active'`,
+      [memstoreId],
+    );
+
+    return new Set(result.rows.map(r => String(r.id)));
   }
 }

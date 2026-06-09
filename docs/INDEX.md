@@ -1,11 +1,29 @@
-# llmems — Project Index
+# llmems — Project Index / State Recap
+
+Последнее обновление: 2026-06-09
 
 ## Current State
 
-`@alexmakeev/llmems` v0.3.3 — TypeScript long-term memory library for LLM agents.
+`@alexmakeev/llmems` v0.4.0 — TypeScript long-term memory library for LLM agents.
 Published to GitHub Packages (`@alexmakeev/llmems`), tag-driven CD via `.github/workflows/publish.yml`.
 
-**2026-05-23:** fixed git/registry drift, cut v0.3.3 (first tag-driven CD publish), removed stale `gitea` remote, renamed + archived dead monolith → `altme-monolith-legacy`.
+**2026-06-09 — v0.4.0 consolidation (Phase 1A):** merged `feature/context-factory` → `main`. This is the
+**pivot to pure abstract memory**: `OpenRouterChat` (the LLM-calling chat wrapper) is **removed**; the library
+no longer calls any LLM for chat. Public API is now two functions — `remember()` mutates per-session state,
+`getCurrentContext()` is a pure projection to a prompt-block string. Generation/system-prompt/persona move OUT
+to the consumer. Hard breaking change under 0.x semver, matches documented v0.4.0 intent.
+
+**2026-05-23:** fixed git/registry drift, cut v0.3.3 (first tag-driven CD publish), removed stale `gitea`
+remote, renamed + archived dead monolith → `altme-monolith-legacy`.
+
+## v0.4.0 core (from feature/context-factory)
+
+- **ContextFactory** (`src/services/context-factory.ts`) — `remember()` (rawTail append + EMA focus shift +
+  dedup mem-load + softRebuild + fire-and-forget indexing) and `getCurrentContext()` (pure projection:
+  stable backbone block → "Loaded from memory:" marker → dynamic mems → raw tail). Cache-friendly stable prefix.
+- **BackgroundIndexer** (`src/services/background-indexer.ts`) — raw chunks → closed mems, count-based trigger.
+- **LLMSummarizer** (`src/services/llm-summarizer.ts`) — standalone OpenAI-compatible summarizer.
+- **context-metric** (`src/services/context-metric.ts`) — `computeContextQualityScore`.
 
 ## Repository Topology
 
@@ -20,37 +38,49 @@ Published to GitHub Packages (`@alexmakeev/llmems`), tag-driven CD via `.github/
 - llmems is a library consumed by Altme. Two different repos, two different projects.
 - Altme deploys from `altme-bot.git` via Dokploy — NOT from any local `~/llmems/` path.
 - Do NOT modify altme-bot code/commits/deploys; write a bug-report for altme-bot issues.
+- Note: altme-bot currently vendors a COPY of the old chat logic (bead llmems-t62) — it does NOT consume the
+  package today, so the v0.4.0 API break does not break altme-bot. Reconciliation tracked separately.
 
 ### Archived dead monolith
 - Old gitea repo `llm-agents/llmems` (the Altme monolith) renamed → `altme-monolith-legacy`, archived 2026-05-23.
 - Dead: not the library, not the live bot. Do NOT restore or deploy from it.
 
+## Branches after consolidation
+
+- `main` — v0.4.0 release line (this branch).
+- `feature/context-factory` — merged into main (kept for history).
+- `fix/ask-response-format` — DROPPED (was 0 ahead of main; ask() fix already shipped in v0.3.3; the code it
+  patched, `openrouter-chat.ts`, is deleted in v0.4.0).
+- `experiment/axis-projections` — PARKED (graph/axis module; graph bet paused, re-evaluate in Phase 3).
+- `experiment/graph-memory` — PARKED (superseded by feature's vision.md).
+
 ## Active Beads
 
-Open beads (as of 2026-05-23 — run `bd list` for current status):
+Run `bd list` for current status. Live epic:
 
-| ID | P | Summary |
-|----|---|---------|
-| llmems-ccj | P2 | Port ask() fix to experiment branches (axis-projections, context-factory, graph-memory) |
-| llmems-e08 | P2 | ContextFactory session Map — implement eviction/TTL/LRU |
-| llmems-dnh | P2 | Restore frozen recall gold-set on this machine |
-| llmems-xcz | P2 | Phase 2 — Structure and context-completion (dosborka) epic |
-| llmems-wji | P2 | docs: benchmark pipeline runbook |
-| llmems-2le | P2 | fix: re-extract-projections.ts missing OpenRouter config |
-| llmems-a9r | P2 | security: remove hardcoded dev-DB password from benchmark scripts |
-| llmems-3zq | P3 | Bump GitHub Actions to Node 24-compatible versions |
-| llmems-t62 | P3 | altme-bot duplicated llmems chat logic — reconcile on next bump |
+- **llmems-3io** — Phase 1 — v0.4.0 in main + test-stand integration + long-memory benchmark.
 
-Sub-beads of llmems-xcz: xcz.1 (mem typing), xcz.2 (hierarchical mems), xcz.3 (graph context-completion), xcz.4 (Phase 2 uplift measurement).
+Carried-over (see `bd list -s priority`): llmems-e08 (session TTL/LRU/eviction), llmems-dnh (recall gold-set),
+llmems-xcz (Phase 2 structure + graph dosborka, gated on baseline), llmems-3zq (Node 24 actions),
+llmems-t62 (altme-bot vendored-copy reconcile), llmems-a9r (dev-DB password in benchmark scripts).
 
-## What's Next
+## Key files
 
-1. Port ask() fix to all experiment branches (llmems-ccj, P2).
-2. Restore recall gold-set (llmems-dnh), then run Phase 2 uplift measurement (llmems-xcz.4).
-3. Security: remove hardcoded dev-DB password (llmems-a9r).
-4. See `bd list -s priority` for current priority order.
+| Файл | Роль |
+|------|------|
+| `src/services/context-factory.ts` | Основная реализация ContextFactory |
+| `src/services/background-indexer.ts` | Standalone BackgroundIndexer (raw→mem→archive) |
+| `src/services/llm-summarizer.ts` | Standalone LLMSummarizer (OpenAI-compatible) |
+| `src/services/postgres-mem-store.ts` | PostgreSQL-реализация IVectorMemStore |
+| `src/services/context-metric.ts` | Метрика качества контекста |
+| `src/types.ts` | Доменные типы (Mem, EmbeddingValue, IVectorMemStore, …) |
+| `src/index.ts` | Публичный barrel-экспорт библиотеки |
+| `docs/vision.md` | Архитектурное видение (north-star) |
+| `docs/building-a-chat.md` | Паттерн потребителя: чат поверх llmems |
+| `docs/baseline-metric.md` | Методика и результат замера baseline |
 
 ## Further Reading
 
-- [Competitors & Prior Art](competitors.md) — landscape of LLM-agent memory solutions, build-vs-adopt analysis, and benchmarks to measure against.
+- [Competitors & Prior Art](competitors.md) — landscape of LLM-agent memory solutions, build-vs-adopt analysis.
 - [Конкуренты и аналоги (RU)](competitors.ru.md) — русский перевод обзора.
+- [Vision](vision.md) — архитектурное видение.
