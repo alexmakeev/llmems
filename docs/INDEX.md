@@ -4,14 +4,21 @@
 
 ## Current State
 
-`@alexmakeev/llmems` v0.4.0 — TypeScript long-term memory library for LLM agents.
-Published to GitHub Packages (`@alexmakeev/llmems`), tag-driven CD via `.github/workflows/publish.yml`.
+**Phase 1A — COMPLETE.** `@alexmakeev/llmems` v0.4.0 published to GitHub Packages. Tag `v0.4.0`, head
+commit `79900cf` on `main`. 242 tests green. Workflow `publish.yml` run verified successful.
 
-**2026-06-09 — v0.4.0 consolidation (Phase 1A):** merged `feature/context-factory` → `main`. This is the
-**pivot to pure abstract memory**: `OpenRouterChat` (the LLM-calling chat wrapper) is **removed**; the library
-no longer calls any LLM for chat. Public API is now two functions — `remember()` mutates per-session state,
-`getCurrentContext()` is a pure projection to a prompt-block string. Generation/system-prompt/persona move OUT
-to the consumer. Hard breaking change under 0.x semver, matches documented v0.4.0 intent.
+**What's next: Phase 1B** — test-stand integration of llmems into One Liner `prompt.ts`. See
+[Active Beads](#active-beads) and `docs/product/next.md` for cold-restart pointer.
+
+**2026-06-09 — v0.4.0 (Phase 1A):** merged `feature/context-factory` → `main`. This is the
+**pivot to pure context generation**: `OpenRouterChat` (the LLM-calling chat wrapper) is **removed**; the library
+no longer calls any LLM for chat. Public API is now `remember()` (mutates per-session state) and
+`getCurrentContext()` (pure projection to a prompt-block string), plus two new APIs:
+- `getCurrentContextParts()` — structured 3-part view (stable backbone / dynamic mems / raw tail), exposes boundary for cache-hint injection.
+- `getLongTermContext()` — long-term-only mode, excludes active raw tail.
+
+Generation/system-prompt/persona move OUT to the consumer. Hard breaking change under 0.x semver, matches
+documented v0.4.0 intent.
 
 **2026-05-23:** fixed git/registry drift, cut v0.3.3 (first tag-driven CD publish), removed stale `gitea`
 remote, renamed + archived dead monolith → `altme-monolith-legacy`.
@@ -61,11 +68,23 @@ remote, renamed + archived dead monolith → `altme-monolith-legacy`.
 
 Run `bd list` for current status. Live epic:
 
-- **llmems-3io** — Phase 1 — v0.4.0 in main + test-stand integration + long-memory benchmark.
+- **llmems-3io** — Phase 1 epic (v0.4.0 in main + test-stand integration + long-memory benchmark).
+  - `.1`–`.6` — **DONE** (Phase 1A: context-factory, getCurrentContextParts, getLongTermContext, merge, publish)
+  - `.7` — Phase 1B: provision test-stand One Liner instance + PostgresMemStore schema (NEXT)
+  - `.8` — Phase 1B: implement llmems middleware in One Liner `prompt.ts`
+  - `.9` — Phase 1B: deploy to test-stand + smoke test (end of Phase 1B)
+  - `.10` — Phase 1C: long-memory benchmark on test-stand (blocked by `.9` + backlog beads below)
+  - `.11` — Phase 1D: report + decision (benchmark results → open-core boundary decision)
 
-Carried-over (see `bd list -s priority`): llmems-e08 (session TTL/LRU/eviction), llmems-dnh (recall gold-set),
-llmems-xcz (Phase 2 structure + graph dosborka, gated on baseline), llmems-3zq (Node 24 actions),
-llmems-t62 (altme-bot vendored-copy reconcile), llmems-a9r (dev-DB password in benchmark scripts).
+Blocking backlog (must resolve before `.10`): llmems-dnh (gold-set for recall), llmems-a9r (dev-DB
+password in benchmark scripts), llmems-wji (benchmark runbook).
+
+Carried-over (see `bd list -s priority`): llmems-e08 (session TTL/LRU/eviction), llmems-xcz (Phase 2
+structure + graph, gated on baseline), llmems-3zq (Node 24 actions), llmems-t62 (altme-bot
+vendored-copy reconcile).
+
+Graph/axis branches (`experiment/axis-projections`, `experiment/graph-memory`) — **PARKED**. Do not
+delete. Re-evaluate in Phase 3 on real benchmark data.
 
 ## Key files
 
