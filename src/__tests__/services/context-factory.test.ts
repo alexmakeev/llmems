@@ -696,6 +696,79 @@ describe('ContextFactory', () => {
     });
   });
 
+  // ── getLongTermContext — long-term-only mode (excludes active raw tail) ───
+
+  describe('getLongTermContext — excludes the active raw tail', () => {
+    function makeMem(
+      id: string,
+      summary: string,
+      closedAt: Date,
+      chunkIds: string[] = [],
+      provenance: 'current' | 'backbone' = 'current',
+    ): import('../../services/context-factory.js').LoadedMem {
+      return { id, summary, chunkIds, embeddings: { full: [] }, closedAt, provenance };
+    }
+
+    it('returns an empty string for an unknown session', async () => {
+      expect(await factory.getLongTermContext('no-such-session')).toBe('');
+    });
+
+    it('returns an empty string for a rawTail-only session (no long-term mems)', async () => {
+      const s = factory.getOrCreateSession('s-lt-tailonly');
+      s.rawTail.push({ content: 'active utterance', receivedAt: new Date() });
+
+      const result = await factory.getLongTermContext('s-lt-tailonly');
+      expect(result).toBe('');
+    });
+
+    it('includes backbone + dynamic mems but EXCLUDES the raw tail content', async () => {
+      const s = factory.getOrCreateSession('s-lt-all');
+      s.loaded.push(makeMem('b1', 'Backbone fact', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+      s.loaded.push(makeMem('c1', 'Recalled fact', new Date('2024-01-02T00:00:00.000Z'), [], 'current'));
+      s.rawTail.push({ content: 'ACTIVE-TAIL-LINE', receivedAt: new Date() });
+
+      const result = await factory.getLongTermContext('s-lt-all');
+      expect(result).toContain('Backbone fact');
+      expect(result).toContain('Recalled fact');
+      expect(result).toContain('Loaded from memory:'); // marker precedes dynamic mems
+      expect(result).not.toContain('ACTIVE-TAIL-LINE'); // the active tail is excluded
+    });
+
+    it('equals getCurrentContext when the session has no raw tail', async () => {
+      const s = factory.getOrCreateSession('s-lt-notail');
+      s.loaded.push(makeMem('b1', 'BB', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+      s.loaded.push(makeMem('c1', 'CUR', new Date('2024-01-02T00:00:00.000Z'), [], 'current'));
+
+      expect(await factory.getLongTermContext('s-lt-notail')).toBe(
+        await factory.getCurrentContext('s-lt-notail'),
+      );
+    });
+
+    it('equals the backbone+dynamic segments of getCurrentContextParts (joined, trimmed)', async () => {
+      const s = factory.getOrCreateSession('s-lt-invariant');
+      s.loaded.push(makeMem('b1', 'BB1', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+      s.loaded.push(makeMem('c1', 'CUR1', new Date('2024-01-02T00:00:00.000Z'), [], 'current'));
+      s.rawTail.push({ content: 'tail', receivedAt: new Date() });
+
+      const parts = await factory.getCurrentContextParts('s-lt-invariant');
+      const expected = [parts.backbone, parts.dynamic].filter((x) => x.length > 0).join('\n').trimEnd();
+      expect(await factory.getLongTermContext('s-lt-invariant')).toBe(expected);
+    });
+
+    it('is a pure projection — calls no store/DB methods', async () => {
+      const s = factory.getOrCreateSession('s-lt-pure');
+      s.loaded.push(makeMem('b1', 'BB', new Date(), [], 'backbone'));
+      s.rawTail.push({ content: 'tail', receivedAt: new Date() });
+
+      await factory.getLongTermContext('s-lt-pure');
+
+      expect(store.searchMemsByVector).not.toHaveBeenCalled();
+      expect(store.getActiveChunkIds).not.toHaveBeenCalled();
+      expect(store.getClosedMems).not.toHaveBeenCalled();
+      expect(store.buildMemContext).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Step 7: recalled-memory marker ───────────────────────────────────────
 
   describe('getCurrentContext — recalled-memory marker (Step 7)', () => {

@@ -621,6 +621,27 @@ export class ContextFactory {
   }
 
   /**
+   * Long-term-only projection: the assembled context with the active raw tail
+   * EXCLUDED. Returns only the long-term layers (stable `backbone` mems + the
+   * dynamically-recalled `current` mems, marker included), as a flat string in
+   * the same format as {@link getCurrentContext}.
+   *
+   * For consumers that already carry their own live session history (e.g. an
+   * agent runtime like OpenCode) and would otherwise double-feed the most recent
+   * turns: they prepend this long-term block and keep their own raw tail.
+   *
+   * Implemented on top of {@link getCurrentContextParts} (single source of truth):
+   * equivalent to joining the non-empty `backbone` + `dynamic` segments with '\n'
+   * and trimming the end. Pure projection — no DB calls. An unknown session yields ''.
+   *
+   * @param sessionId - The session to serialize.
+   */
+  async getLongTermContext(sessionId: string): Promise<string> {
+    const { backbone, dynamic } = await this.getCurrentContextParts(sessionId);
+    return [backbone, dynamic].filter((segment) => segment.length > 0).join('\n').trimEnd();
+  }
+
+  /**
    * Structured variant of {@link getCurrentContext}: returns the three context
    * layers separately instead of one flat block, so a consumer can attach a
    * provider cache breakpoint at the layer boundary. The stable `backbone`
