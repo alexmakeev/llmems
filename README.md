@@ -144,6 +144,7 @@ Main entry point. Manages per-session focus vectors, mem caches, and context ass
 
 - `remember(sessionId, fragment, contextId)` — store a fragment, shift session focus, load newly-relevant mems into cache. Returns `Promise<void>`.
 - `getCurrentContext(sessionId)` — serialize the current session cache into a single string ready for prepending to your LLM prompt. Returns `Promise<string>`.
+- `getCurrentContextParts(sessionId)` — structured variant returning the three layers separately: `{ backbone: string; dynamic: string; rawTail: string }`. The stable `backbone` prefix is the cache-friendly part — attach your provider's cache breakpoint at the layer boundary. `getCurrentContext` is built on top of this; the non-empty segments joined by `\n` (trimmed) reproduce the flat output exactly. Returns `Promise<{ backbone: string; dynamic: string; rawTail: string }>`.
 - `getOrCreateSession(sessionId)` — return (or create) the in-memory per-session state (`SessionWorkingState`). Useful for inspection.
 
 ### `BackgroundIndexer`

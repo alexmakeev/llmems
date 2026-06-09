@@ -548,6 +548,154 @@ describe('ContextFactory', () => {
     });
   });
 
+  // ── getCurrentContextParts — structured segments (cache boundary) ─────────
+
+  describe('getCurrentContextParts — structured segments', () => {
+    /**
+     * Build a LoadedMem fixture with a known closedAt date.
+     * provenance drives layer assignment — default 'current' (dynamic block).
+     */
+    function makeMem(
+      id: string,
+      summary: string,
+      closedAt: Date,
+      chunkIds: string[] = [],
+      provenance: 'current' | 'backbone' = 'current',
+    ): import('../../services/context-factory.js').LoadedMem {
+      return { id, summary, chunkIds, embeddings: { full: [] }, closedAt, provenance };
+    }
+
+    /** Re-concatenate the three segments the way a consumer would, to compare with the flat output. */
+    function reconcat(parts: { backbone: string; dynamic: string; rawTail: string }): string {
+      return [parts.backbone, parts.dynamic, parts.rawTail].filter((s) => s.length > 0).join('\n').trimEnd();
+    }
+
+    it('returns three empty segments for an unknown session', async () => {
+      const parts = await factory.getCurrentContextParts('no-such-session');
+      expect(parts).toEqual({ backbone: '', dynamic: '', rawTail: '' });
+    });
+
+    it('returns three empty segments for an empty (lazily-created) session', async () => {
+      factory.getOrCreateSession('s-empty');
+      const parts = await factory.getCurrentContextParts('s-empty');
+      expect(parts).toEqual({ backbone: '', dynamic: '', rawTail: '' });
+    });
+
+    it('puts backbone mems in `backbone` with NO marker, and leaves dynamic/rawTail empty', async () => {
+      const state = factory.getOrCreateSession('s-bb');
+      state.loaded.push(makeMem('b1', 'Backbone one', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+      state.loaded.push(makeMem('b2', 'Backbone two', new Date('2024-01-02T00:00:00.000Z'), [], 'backbone'));
+
+      const parts = await factory.getCurrentContextParts('s-bb');
+      expect(parts.backbone).toContain('<mem ts="2024-01-01T00:00:00.000Z">Backbone one</mem>');
+      expect(parts.backbone).toContain('<mem ts="2024-01-02T00:00:00.000Z">Backbone two</mem>');
+      // backbone is the stable, cache-friendly prefix — never carries the marker
+      expect(parts.backbone).not.toContain('Loaded from memory:');
+      expect(parts.dynamic).toBe('');
+      expect(parts.rawTail).toBe('');
+      // order preserved: b1 before b2
+      expect(parts.backbone.indexOf('Backbone one')).toBeLessThan(parts.backbone.indexOf('Backbone two'));
+    });
+
+    it('puts current mems in `dynamic` preceded by the marker; backbone/rawTail empty', async () => {
+      const state = factory.getOrCreateSession('s-dyn');
+      state.loaded.push(makeMem('c1', 'Current one', new Date('2024-01-03T00:00:00.000Z'), [], 'current'));
+
+      const parts = await factory.getCurrentContextParts('s-dyn');
+      expect(parts.backbone).toBe('');
+      expect(parts.dynamic.startsWith('Loaded from memory:')).toBe(true);
+      expect(parts.dynamic).toContain('<mem ts="2024-01-03T00:00:00.000Z">Current one</mem>');
+      expect(parts.rawTail).toBe('');
+    });
+
+    it('puts unindexed fragments in `rawTail` as plain text (no <mem>); backbone/dynamic empty', async () => {
+      const state = factory.getOrCreateSession('s-tail');
+      state.rawTail.push({ content: 'fragment A', receivedAt: new Date() });
+      state.rawTail.push({ content: 'fragment B', receivedAt: new Date() });
+
+      const parts = await factory.getCurrentContextParts('s-tail');
+      expect(parts.backbone).toBe('');
+      expect(parts.dynamic).toBe('');
+      expect(parts.rawTail).toBe('fragment A\nfragment B');
+      expect(parts.rawTail).not.toContain('<mem');
+    });
+
+    it('separates all three layers when backbone + current + rawTail are all present', async () => {
+      const state = factory.getOrCreateSession('s-all');
+      state.loaded.push(makeMem('b1', 'BB mem', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+      state.loaded.push(makeMem('c1', 'CUR mem', new Date('2024-01-02T00:00:00.000Z'), [], 'current'));
+      state.rawTail.push({ content: 'tail line', receivedAt: new Date() });
+
+      const parts = await factory.getCurrentContextParts('s-all');
+      expect(parts.backbone).toContain('BB mem');
+      expect(parts.backbone).not.toContain('CUR mem');
+      expect(parts.backbone).not.toContain('tail line');
+      expect(parts.backbone).not.toContain('Loaded from memory:');
+      expect(parts.dynamic).toContain('Loaded from memory:');
+      expect(parts.dynamic).toContain('CUR mem');
+      expect(parts.dynamic).not.toContain('BB mem');
+      expect(parts.dynamic).not.toContain('tail line');
+      expect(parts.rawTail).toBe('tail line');
+    });
+
+    it('uses the configured custom markerText in the dynamic segment', async () => {
+      const custom = new ContextFactory(store, embeddingService, indexer, { markerText: 'СТАРОЕ:' });
+      const state = custom.getOrCreateSession('s-custom');
+      state.loaded.push(makeMem('c1', 'Cur', new Date('2024-01-01T00:00:00.000Z'), [], 'current'));
+
+      const parts = await custom.getCurrentContextParts('s-custom');
+      expect(parts.dynamic.startsWith('СТАРОЕ:')).toBe(true);
+    });
+
+    it('is a pure projection — calls no store/DB methods', async () => {
+      const state = factory.getOrCreateSession('s-pure');
+      state.loaded.push(makeMem('b1', 'BB', new Date(), [], 'backbone'));
+      state.loaded.push(makeMem('c1', 'CUR', new Date(), [], 'current'));
+      state.rawTail.push({ content: 'tail', receivedAt: new Date() });
+
+      await factory.getCurrentContextParts('s-pure');
+
+      expect(store.searchMemsByVector).not.toHaveBeenCalled();
+      expect(store.getActiveChunkIds).not.toHaveBeenCalled();
+      expect(store.getClosedMems).not.toHaveBeenCalled();
+      expect(store.buildMemContext).not.toHaveBeenCalled();
+    });
+
+    // The core invariant: the structured parts re-concatenate to EXACTLY the flat output.
+    it.each([
+      'unknown-session',
+      's-inv-empty',
+      's-inv-bb',
+      's-inv-dyn',
+      's-inv-tail',
+      's-inv-all',
+    ])('re-concatenates to exactly getCurrentContext() for %s', async (id) => {
+      if (id === 's-inv-empty') {
+        factory.getOrCreateSession(id);
+      } else if (id === 's-inv-bb') {
+        const s = factory.getOrCreateSession(id);
+        s.loaded.push(makeMem('b1', 'BB one', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+        s.loaded.push(makeMem('b2', 'BB two', new Date('2024-01-02T00:00:00.000Z'), [], 'backbone'));
+      } else if (id === 's-inv-dyn') {
+        const s = factory.getOrCreateSession(id);
+        s.loaded.push(makeMem('c1', 'CUR one', new Date('2024-01-03T00:00:00.000Z'), [], 'current'));
+      } else if (id === 's-inv-tail') {
+        const s = factory.getOrCreateSession(id);
+        s.rawTail.push({ content: 'frag1', receivedAt: new Date() });
+        s.rawTail.push({ content: 'frag2', receivedAt: new Date() });
+      } else if (id === 's-inv-all') {
+        const s = factory.getOrCreateSession(id);
+        s.loaded.push(makeMem('b1', 'BB', new Date('2024-01-01T00:00:00.000Z'), [], 'backbone'));
+        s.loaded.push(makeMem('c1', 'CUR', new Date('2024-01-02T00:00:00.000Z'), [], 'current'));
+        s.rawTail.push({ content: 'tail', receivedAt: new Date() });
+      }
+
+      const flat = await factory.getCurrentContext(id);
+      const parts = await factory.getCurrentContextParts(id);
+      expect(reconcat(parts)).toBe(flat);
+    });
+  });
+
   // ── Step 7: recalled-memory marker ───────────────────────────────────────
 
   describe('getCurrentContext — recalled-memory marker (Step 7)', () => {

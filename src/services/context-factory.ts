@@ -614,12 +614,37 @@ export class ContextFactory {
    *   as empty (returns "").
    */
   async getCurrentContext(sessionId: string): Promise<string> {
+    // Implemented on top of getCurrentContextParts so the flat and structured
+    // forms can never diverge (single source of truth for the sloyonka layout).
+    const { backbone, dynamic, rawTail } = await this.getCurrentContextParts(sessionId);
+    return [backbone, dynamic, rawTail].filter((segment) => segment.length > 0).join('\n').trimEnd();
+  }
+
+  /**
+   * Structured variant of {@link getCurrentContext}: returns the three context
+   * layers separately instead of one flat block, so a consumer can attach a
+   * provider cache breakpoint at the layer boundary. The stable `backbone`
+   * prefix is the cacheable part; `dynamic` and `rawTail` change per turn.
+   *
+   *   - `backbone` — stable mems (provenance 'backbone'), serialized, NO marker.
+   *   - `dynamic`  — the marker (`config.markerText`) followed by the per-turn
+   *                  'current' mems; '' when there are no current mems.
+   *   - `rawTail`  — unindexed fragments as plain text, most recent last; '' when none.
+   *
+   * Invariant (covered by tests): the non-empty segments joined by '\n' and
+   * trimmed at the end reproduce `getCurrentContext(sessionId)` exactly.
+   *
+   * Pure projection — no DB calls. An unknown session yields three empty strings.
+   *
+   * @param sessionId - The session to serialize.
+   */
+  async getCurrentContextParts(
+    sessionId: string,
+  ): Promise<{ backbone: string; dynamic: string; rawTail: string }> {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
-      return '';
+      return { backbone: '', dynamic: '', rawTail: '' };
     }
-
-    const parts: string[] = [];
 
     // Partition loaded mems by provenance in a single pass.
     const backboneMems: LoadedMem[] = [];
@@ -632,25 +657,19 @@ export class ContextFactory {
       }
     }
 
-    // [1] BACKBONE block: stable, no marker
-    for (const mem of backboneMems) {
-      parts.push(this.serializeMem(mem));
-    }
+    // [1] BACKBONE block: stable, no marker.
+    const backbone = backboneMems.map((mem) => this.serializeMem(mem)).join('\n');
 
-    // [2] CURRENT block: dynamic, preceded by marker (when non-empty)
-    if (currentMems.length > 0) {
-      parts.push(this.config.markerText);
-      for (const mem of currentMems) {
-        parts.push(this.serializeMem(mem));
-      }
-    }
+    // [2] CURRENT block: dynamic, preceded by the marker (when non-empty).
+    const dynamic =
+      currentMems.length > 0
+        ? [this.config.markerText, ...currentMems.map((mem) => this.serializeMem(mem))].join('\n')
+        : '';
 
-    // [3] RAW TAIL: plain text, recomputed each call
-    for (const fragment of session.rawTail) {
-      parts.push(fragment.content);
-    }
+    // [3] RAW TAIL: plain text, recomputed each call.
+    const rawTail = session.rawTail.map((fragment) => fragment.content).join('\n');
 
-    return parts.join('\n').trimEnd();
+    return { backbone, dynamic, rawTail };
   }
 
   /**

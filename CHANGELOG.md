@@ -8,9 +8,10 @@ The pivot to **pure abstract memory**. llmems no longer calls any LLM for chat, 
 - **Removed `OpenRouterChat`** and the entire LLM-calling chat layer (`prompt`, `ask`, `promptWithTools`, `dryRun`). The package no longer performs any chat/generation. Consumers importing `OpenRouterChat` must move that logic into their own code. This is a hard, one-way API break (acceptable under 0.x semver, and the documented intent of v0.4.0).
 
 ### Added
-- **`ContextFactory`** (`src/services/context-factory.ts`) — the new entry point with a two-function API:
+- **`ContextFactory`** (`src/services/context-factory.ts`) — the new entry point. Core API:
   - `remember(sessionId, fragment, contextId)` — mutates per-session working state: raw-tail append, fresh per-turn focus vector (the fragment's normalized embedding, used directly for ANN recall and soft-rebuild scoring — no EMA accumulation), dedup mem-load, soft-rebuild trigger, and fire-and-forget background indexing.
   - `getCurrentContext(sessionId)` — pure projection (no DB calls) into a single prompt-block string: stable backbone prefix → "Loaded from memory:" marker → dynamic mems (timestamped `<mem ts="…">` XML) → raw tail. The stable prefix is prompt-cache-friendly.
+  - `getCurrentContextParts(sessionId)` — structured variant returning the three layers separately as `{ backbone, dynamic, rawTail }`, so a consumer can place a provider cache breakpoint at the layer boundary (the stable `backbone` is the cacheable prefix). `getCurrentContext` is implemented on top of it; the non-empty segments joined by `\n` (trimmed) reproduce the flat output exactly.
 - **`BackgroundIndexer`** (`src/services/background-indexer.ts`) — standalone raw-chunk → closed-mem converter; count-based trigger (default 16 active chunks); fire-and-forget from `remember()`.
 - **`LLMSummarizer`** (`src/services/llm-summarizer.ts`) — standalone OpenAI-compatible summarizer (retry policy, deterministic temperature) implementing the `ILLMSummarizer` port.
 - **Context quality metric** (`src/services/context-metric.ts`) — `computeContextQualityScore` plus `computeFocusRelevance` / `computeDedupCorrectness` / `computeChronologyIntegrity`; pure, deterministic, no IO.
