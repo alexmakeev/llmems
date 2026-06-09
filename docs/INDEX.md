@@ -53,3 +53,4 @@ Sub-beads of llmems-xcz: xcz.1 (mem typing), xcz.2 (hierarchical mems), xcz.3 (g
 ## Further Reading
 
 - [Competitors & Prior Art](competitors.md) — landscape of LLM-agent memory solutions, build-vs-adopt analysis, and benchmarks to measure against.
+- [Конкуренты и аналоги (RU)](competitors.ru.md) — русский перевод обзора.
