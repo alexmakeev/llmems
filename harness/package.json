@@ -1,0 +1,21 @@
+{
+  "name": "@alexmakeev/llmems-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 1B prototype harness: consumes published @alexmakeev/llmems against the AM32 test stand (bead llmems-3io.8). Not published to npm.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "seed": "tsx src/cli.ts seed",
+    "recall": "tsx src/cli.ts recall"
+  },
+  "dependencies": {
+    "@alexmakeev/llmems": "^0.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
