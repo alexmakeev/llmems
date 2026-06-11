@@ -20,3 +20,16 @@ export function requireEnv(
   }
   return value;
 }
+
+/** Integer variant: same loud fail-fast, plus strict integer validation. */
+export function requireEnvInt(
+  name: string,
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = requireEnv(name, env);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`${name} must be an integer, got "${raw}"`);
+  }
+  return value;
+}

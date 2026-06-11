@@ -2,7 +2,7 @@
 // The helper is the SINGLE fail-fast path for script env config: no hardcoded
 // defaults, no fallbacks — a missing variable throws loudly.
 import { describe, it, expect } from 'vitest';
-import { requireEnv } from '../../../scripts/lib/require-env.js';
+import { requireEnv, requireEnvInt } from '../../../scripts/lib/require-env.js';
 
 describe('requireEnv (llmems-a9r fail-fast)', () => {
   it('returns the value when the variable is set', () => {
@@ -25,5 +25,20 @@ describe('requireEnv (llmems-a9r fail-fast)', () => {
     } finally {
       delete process.env['A9R_TEST_VAR_PROC'];
     }
+  });
+});
+
+describe('requireEnvInt (llmems-g3a)', () => {
+  it('parses a valid integer', () => {
+    expect(requireEnvInt('MEMSTORE_ID', { MEMSTORE_ID: '4' })).toBe(4);
+  });
+
+  it('throws when unset (inherits requireEnv loudness)', () => {
+    expect(() => requireEnvInt('MEMSTORE_ID', {})).toThrowError(/MEMSTORE_ID/);
+  });
+
+  it('throws on non-integer values, naming the variable', () => {
+    expect(() => requireEnvInt('MEMSTORE_ID', { MEMSTORE_ID: 'four' })).toThrowError(/MEMSTORE_ID/);
+    expect(() => requireEnvInt('MEMSTORE_ID', { MEMSTORE_ID: '4.5' })).toThrowError(/integer/i);
   });
 });
