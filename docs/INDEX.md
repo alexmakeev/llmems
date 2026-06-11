@@ -1,14 +1,27 @@
 # llmems — Project Index / State Recap
 
-Последнее обновление: 2026-06-09
+Последнее обновление: 2026-06-11
 
 ## Current State
 
+**Phase 1B — IN PROGRESS.** Plan v2: `materials/plan-phase1b.md` (Codex PLAN_REVIEW: CONCERNS folded
+as MUST criteria D15/D16 — run-scoped contextId + per-run nonce; deterministic indexing wait).
+
+- **`.7` — DONE (2026-06-11).** AM32 stand ready: DB `llmems_stand` (5 tables + pgvector), GitHub
+  Packages auth, embeddings route `openai-embedding-small` via shared litellm, scoped key
+  `llmems-teststand` ($5 hard cap, ~$1 target — total envelope smoke + benchmark). Spend so far: $0.000037.
+- **`.8` — IN PROGRESS** (developer): standalone prototype harness `harness/` in this repo,
+  consuming published v0.4.0 (EmbeddingAdapter + ContextFactory wiring + time-boxed/capped/logged
+  pipeline + seed/recall CLI, TDD).
+- **`.9` — NEXT:** cross-session memory smoke on the stand (seed → restart → recall of nonce-bearing
+  planted facts).
+
+**⚠ One Liner DE-SCOPED from Phase 1B/1C (owner decision 2026-06-11):** no prompt.ts middleware, no
+One Liner instance on the stand. One Liner gets memory much later, after обкатка + several
+prototypes; memory is bound to the stand, the benchmark runs on it.
+
 **Phase 1A — COMPLETE.** `@alexmakeev/llmems` v0.4.0 published to GitHub Packages. Tag `v0.4.0`, head
 commit `79900cf` on `main`. 242 tests green. Workflow `publish.yml` run verified successful.
-
-**What's next: Phase 1B** — test-stand integration of llmems into One Liner `prompt.ts`. See
-[Active Beads](#active-beads) and `docs/product/next.md` for cold-restart pointer.
 
 **2026-06-09 — v0.4.0 (Phase 1A):** merged `feature/context-factory` → `main`. This is the
 **pivot to pure context generation**: `OpenRouterChat` (the LLM-calling chat wrapper) is **removed**; the library
@@ -68,16 +81,21 @@ remote, renamed + archived dead monolith → `altme-monolith-legacy`.
 
 Run `bd list` for current status. Live epic:
 
-- **llmems-3io** — Phase 1 epic (v0.4.0 in main + test-stand integration + long-memory benchmark).
+- **llmems-3io** — Phase 1 epic (v0.4.0 in main + memory-прототип on test stand + long-memory benchmark).
   - `.1`–`.6` — **DONE** (Phase 1A: context-factory, getCurrentContextParts, getLongTermContext, merge, publish)
-  - `.7` — Phase 1B: provision test-stand One Liner instance + PostgresMemStore schema (NEXT)
-  - `.8` — Phase 1B: implement llmems middleware in One Liner `prompt.ts`
-  - `.9` — Phase 1B: deploy to test-stand + smoke test (end of Phase 1B)
-  - `.10` — Phase 1C: long-memory benchmark on test-stand (blocked by `.9` + backlog beads below)
+  - `.7` — **DONE** Phase 1B: AM32 stand memory DB + scoped LiteLLM key (no One Liner)
+  - `.8` — **IN PROGRESS** Phase 1B: standalone prototype harness (`harness/`, consumes published v0.4.0)
+  - `.9` — Phase 1B: cross-session memory smoke on the stand (end of Phase 1B)
+  - `.10` — Phase 1C: long-memory benchmark — existing pipeline pointed at the stand DB via required
+    `POSTGRES_URL`; no harness coupling (blocked by `.9` + backlog beads below)
   - `.11` — Phase 1D: report + decision (benchmark results → open-core boundary decision)
 
 Blocking backlog (must resolve before `.10`): llmems-dnh (gold-set for recall), llmems-a9r (dev-DB
 password in benchmark scripts), llmems-wji (benchmark runbook).
+
+New (2026-06-11):
+- **llmems-q6l** — ⚠ risk: persist oneliner-stack local edits — a redeploy wipes them (stand-provisioning fallout).
+- **llmems-x9i** — backlog: prototype #2, full-turn harness run (after `.9`, does NOT block 1C).
 
 Carried-over (see `bd list -s priority`): llmems-e08 (session TTL/LRU/eviction), llmems-xcz (Phase 2
 structure + graph, gated on baseline), llmems-3zq (Node 24 actions), llmems-t62 (altme-bot
