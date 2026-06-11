@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-The 1C benchmark measures long-term recall quality of `@alexmakeev/llmems` on the AM32 stand DB
+The 1C benchmark measures long-term recall quality of `@alexmakeev/llmems` on the AM32 stand (dedicated `llmems_bench` DB with the frozen corpus)
 using **vectorRecall** (cosine ANN on mem embeddings).
 
 **Canonical script:** `scripts/benchmark/benchmark-recall.ts` (bead llmems-g3a)
@@ -45,25 +45,29 @@ Record the SHA256 on first transfer — this becomes the canonical freeze identi
 `POSTGRES_URL` is required, no fallback. The script exits immediately if unset or empty
 (`scripts/lib/require-env.ts`: `"${name} is required but not set. Export it before running..."`).
 
-### 2.3 Stand DB: corpus present (bead llmems-ad0)
+### 2.3 Benchmark DB (`llmems_bench`): corpus present
 
-The stand must contain the benchmark corpus. Verify:
+`POSTGRES_URL` must point at `llmems_bench` (see §2.4) and the corpus must be there. Verify:
 
 ```bash
 psql "$POSTGRES_URL" -c "SELECT count(*) FROM mems WHERE memstore_id=$MEMSTORE_ID;"
 ```
 
-> **Before ad0 lands:** query may succeed but return 0 — there is no benchmark corpus on the
-> stand yet. Run `.10` only after ad0 migration is complete.
+Expected: 71 (ad0 migration proof). A count of 0 means `POSTGRES_URL` points at the wrong DB
+(most likely the live `llmems_stand` smoke DB) — stop and fix the URL, do not re-migrate blindly.
 
-### 2.4 Corpus migration to stand — bead llmems-ad0
+### 2.4 Corpus migration — bead llmems-ad0 ✅ DONE (2026-06-11)
 
-> **Open prerequisite.**
->
-> The AM32 stand DB currently holds only the 5-table schema and Phase 1B smoke data. The
-> benchmark corpus (`memstore_id=4`, ~71 mems from `benchmark-katya-year`) has not been
-> migrated. Bead llmems-ad0 covers corpus-only migration. Until ad0 lands, vectorRecall
-> returns zero results.
+The frozen benchmark corpus (`memstore_id=4`, 71 mems from `benchmark-katya-year`) lives in the
+**dedicated `llmems_bench` database** on the AM32 stand (same Postgres container as `llmems_stand`,
+separate DB). Rationale: `llmems_stand` is the LIVE smoke DB and keeps minting memstore ids —
+restoring the frozen corpus there would collide with `memstores.id=4` and stay collision-prone;
+a fresh DB gives bit-identical ids and permanent frozen/live isolation (FREEZE spirit).
+Migration proofs (row counts 1/71/108/138/262 exact, dims 1536, 0 NULL embeddings, COPY round-trip
+bit-identical across all 5 tables) are recorded in bead ad0.
+
+> ⚠ For the benchmark, `POSTGRES_URL` MUST point at **`llmems_bench`** — NOT `llmems_stand`.
+> The smoke DB and the benchmark DB are intentionally different databases.
 
 ### 2.5 New vectorRecall script ready (bead llmems-g3a)
 
@@ -104,7 +108,7 @@ All required variables enforced via `scripts/lib/require-env.ts` (fail-fast, no 
 
 | Variable | Description |
 |----------|-------------|
-| `POSTGRES_URL` | AM32 stand DB connection string. Required, no default. |
+| `POSTGRES_URL` | Connection string of the **`llmems_bench`** DB on the AM32 stand (frozen corpus; NOT the live `llmems_stand` smoke DB). `MEMSTORE_ID=4`. Required, no default. |
 | `MEMSTORE_ID` | Integer ID of the memstore to benchmark (e.g. `4`). Enforced via `requireEnvInt`. Used to verify the memstore row exists and to validate the gold set belongs to this corpus (`goldSet.memstoreId === MEMSTORE_ID`). |
 | `BENCHMARK_GOLDSET_FILE` | Path to the frozen gold-set JSON (e.g. `sandboxes/gold-set-4.json`). Required, no default. The script validates the file exists before running; fails fast with a clear message if missing. Never regenerate between compared runs. |
 | `BENCHMARK_LLM_BASE_URL` | LiteLLM endpoint on the AM32 stand (e.g. `http://127.0.0.1:15999/v1` — the dedicated `llmems-litellm` instance). The stand routes embeddings through LiteLLM — **not** OpenRouter directly. |

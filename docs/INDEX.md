@@ -14,7 +14,8 @@ design → D12-rev fixture redesign, then 2/2). Latency p50 ~273 ms / max 896 ms
 (truncation/degrade/late-settle) proven offline only — see `materials/plan-phase1b.md` §Carry to 1D.
 
 **What's next: Phase 1C (`.10`)** — long-memory benchmark: existing pipeline pointed at the stand
-DB via required `POSTGRES_URL` (no harness coupling). Blocked by: **llmems-dnh** (gold-set lives on
+`llmems_bench` DB (frozen corpus; NOT the live `llmems_stand` smoke DB) via required `POSTGRES_URL`
+(no harness coupling). Blocked by: **llmems-dnh** (gold-set lives on
 the generation machine — OWNER action), **llmems-a9r** (POSTGRES_URL required fail-fast + dev-secret
 rotation — owner involved), **llmems-wji** (benchmark runbook).
 
@@ -86,7 +87,7 @@ Run `bd list` for current status. Live epic:
 - **llmems-3io** — Phase 1 epic (v0.4.0 in main + memory-прототип on test stand + long-memory benchmark).
   - `.1`–`.6` — **DONE** (Phase 1A: context-factory, getCurrentContextParts, getLongTermContext, merge, publish)
   - `.7`–`.9` — **DONE** (Phase 1B: AM32 stand + `harness/` + cross-session smoke — all gates green)
-  - `.10` — Phase 1C: long-memory benchmark — existing pipeline pointed at the stand DB via required
+  - `.10` — Phase 1C: long-memory benchmark — existing pipeline pointed at the stand `llmems_bench` DB (frozen corpus, migrated by ad0) via required
     `POSTGRES_URL`; no harness coupling (blocked by llmems-dnh / llmems-a9r / llmems-wji — below)
   - `.11` — Phase 1D: report + decision (benchmark results → open-core boundary decision)
 

@@ -20,7 +20,8 @@ QA evidence review PASS).
 ## Next Action
 
 **Phase 1C (`.10`) — long-memory benchmark prep.** Benchmark = existing pipeline pointed at the
-stand DB via required `POSTGRES_URL` (no harness coupling). Unblock in this order:
+stand `llmems_bench` DB (frozen corpus — ad0 DONE) via required `POSTGRES_URL` (no harness
+coupling). Unblock in this order:
 
 1. **llmems-wji** — write the benchmark runbook (assignable now).
 2. **llmems-a9r** — script part: make `POSTGRES_URL` required, fail-fast (assignable now);
