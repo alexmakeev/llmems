@@ -16,8 +16,7 @@ design → D12-rev fixture redesign, then 2/2). Latency p50 ~273 ms / max 896 ms
 **What's next: Phase 1C (`.10`)** — long-memory benchmark: existing pipeline pointed at the stand
 `llmems_bench` DB (frozen corpus; NOT the live `llmems_stand` smoke DB) via required `POSTGRES_URL`
 (no harness coupling). Blocked by: **llmems-dnh** (gold-set lives on
-the generation machine — OWNER action), **llmems-a9r** (POSTGRES_URL required fail-fast + dev-secret
-rotation — owner involved), **llmems-wji** (benchmark runbook).
+the generation machine — OWNER action).
 
 **⚠ Применения продукта вынесены за scope Фазы 1B/1C (owner decision 2026-06-11):** no host-app
 middleware, no host-app instance on the stand. Integration into applications comes much later,
@@ -88,11 +87,11 @@ Run `bd list` for current status. Live epic:
   - `.1`–`.6` — **DONE** (Phase 1A: context-factory, getCurrentContextParts, getLongTermContext, merge, publish)
   - `.7`–`.9` — **DONE** (Phase 1B: AM32 stand + `harness/` + cross-session smoke — all gates green)
   - `.10` — Phase 1C: long-memory benchmark — existing pipeline pointed at the stand `llmems_bench` DB (frozen corpus, migrated by ad0) via required
-    `POSTGRES_URL`; no harness coupling (blocked by llmems-dnh / llmems-a9r / llmems-wji — below)
+    `POSTGRES_URL`; no harness coupling (blocked by **llmems-dnh** only — owner gold-set transfer)
   - `.11` — Phase 1D: report + decision (benchmark results → open-core boundary decision)
 
-Blocking backlog (must resolve before `.10`): llmems-dnh (gold-set for recall), llmems-a9r (dev-DB
-password in benchmark scripts), llmems-wji (benchmark runbook).
+Blocking backlog (must resolve before `.10`): **llmems-dnh** only (gold-set for recall — OWNER action).
+Resolved/standalone: **llmems-wji** CLOSED (runbook done incl. §5.5 A/B procedure, commit b1aaa53); **llmems-a9r** OPEN standalone (script-side done, owner dev-secret rotation pending, not blocking `.10`).
 
 New (2026-06-11, Phase 1B fallout):
 - **llmems-q6l** (P1) — ⚠ ops: persist the shared-dev-proxy compose-stack local edits on AM32 (litellm embeddings route + networks fix) into the stack repo — a Dokploy git-redeploy wipes them.
