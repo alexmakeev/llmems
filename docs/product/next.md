@@ -15,6 +15,8 @@ Details:
 
 ## Next Action
 
+Active bead: llmems-3io.10 (blocked only by llmems-dnh — owner gold-set transfer)
+
 Check TG topic 592 for owner's gold-set answer (pending ask_question: перенесу сам / инструкция для агента / отложить 1C).
 
 On gold-set arrival at a path: set `BENCHMARK_GOLDSET_FILE` and run `.10` cheap subset (`QUESTION_LIMIT`) per `docs/benchmark.md` against `llmems_bench` (`POSTGRES_URL`), sanity gate vs May baseline 0.524/0.668.
@@ -38,7 +40,5 @@ If no answer yet: idle wait, remind politely once a day max.
 
 ## State
 
-```
 clean
-Last stable commit: 30b0c26
-```
+Last stable commit: 1a466b7
