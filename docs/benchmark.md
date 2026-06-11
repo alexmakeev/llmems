@@ -205,6 +205,49 @@ Inspect results and verify spend is within budget before running without `QUESTI
 
 ---
 
+## 5.5 A/B Run Comparison Procedure
+
+**Current state:** v0.4.0 runs a **single vectorRecall arm only**. Arm B appears when a variant is
+introduced (different retrieval strategy, embedding model, or configuration). This procedure is
+written now so any future comparison is run correctly.
+
+**Definitions:**
+- **Arm A** — baseline configuration run (vectorRecall, current defaults).
+- **Arm B** — variant run: exactly one variable under test changed; all else constant.
+
+### Invariants for a valid comparison
+
+All must hold; violating any makes the arms non-comparable:
+
+1. **Same frozen gold-set file** (§3 FREEZE invariant) — record `sha256sum "$BENCHMARK_GOLDSET_FILE"`
+   before each arm; both SHA values must match before comparing results.
+2. **Same corpus and DB** — both arms target `llmems_bench` (`MEMSTORE_ID=4`); no mems
+   added, removed, or re-embedded between runs.
+3. **Same `QUESTION_LIMIT`** — if capped, the cap must be identical across both arms.
+4. **All env vars identical except the one variable under test.**
+
+### Procedure
+
+1. Complete the §5.1 pre-run checklist.
+2. Record the gold-set SHA: `sha256sum "$BENCHMARK_GOLDSET_FILE"`.
+3. Run arm A per §5.2 (`TEST_NAME=arm-a`); record results per §5.3.
+   Archive: `materials/bench-YYYYMMDD-<sha7>-arm-a.json`.
+4. Verify gold-set SHA is unchanged (repeat `sha256sum` — must match step 2).
+5. Change **only** the variable under test; export `TEST_NAME=arm-b`.
+6. Run arm B per §5.2; record per §5.3.
+   Archive: `materials/bench-YYYYMMDD-<sha7>-arm-b.json`.
+7. Compare `aggregate.recallAt5` / `aggregate.recallAt10` side by side.
+   Use May 2026 baseline (R@5 0.524, R@10 0.668 — §9) as sanity anchor: **Arm A**
+   falling outside the §6.2 range indicates environmental drift (fix before comparing
+   arms); Arm B may legitimately differ — that is the point of the experiment.
+
+### Invalid comparison rule
+
+> **Gold-set regenerated between arms ⇒ comparison INVALID.** Results are non-comparable;
+> restart both arms from scratch with the same frozen file.
+
+---
+
 ## 6. Validity Conditions and Sanity Gate
 
 ### 6.1 Validity conditions (all must hold before treating results as meaningful)
