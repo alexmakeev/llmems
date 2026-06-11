@@ -107,7 +107,7 @@ All required variables enforced via `scripts/lib/require-env.ts` (fail-fast, no 
 | `POSTGRES_URL` | AM32 stand DB connection string. Required, no default. |
 | `MEMSTORE_ID` | Integer ID of the memstore to benchmark (e.g. `4`). Enforced via `requireEnvInt`. Used to verify the memstore row exists and to validate the gold set belongs to this corpus (`goldSet.memstoreId === MEMSTORE_ID`). |
 | `BENCHMARK_GOLDSET_FILE` | Path to the frozen gold-set JSON (e.g. `sandboxes/gold-set-4.json`). Required, no default. The script validates the file exists before running; fails fast with a clear message if missing. Never regenerate between compared runs. |
-| `BENCHMARK_LLM_BASE_URL` | LiteLLM endpoint on the AM32 stand (e.g. `http://127.0.0.1:14999/v1`). The stand routes embeddings through LiteLLM — **not** OpenRouter directly. |
+| `BENCHMARK_LLM_BASE_URL` | LiteLLM endpoint on the AM32 stand (e.g. `http://127.0.0.1:15999/v1` — the dedicated `llmems-litellm` instance). The stand routes embeddings through LiteLLM — **not** OpenRouter directly. |
 | `BENCHMARK_LLM_API_KEY` | Scoped `llmems-teststand` LiteLLM key ($5 hard cap). |
 | `BENCHMARK_EMBEDDING_MODEL` | Embedding model name as known to LiteLLM (e.g. `openai-embedding-small` on the stand; was `openai/text-embedding-3-small` on the generation machine). No default — must match the route explicitly; see §6.1 validity condition. |
 

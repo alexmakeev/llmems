@@ -39,14 +39,14 @@ CEO product-memory. Updated: 2026-06-09.
 
 ## Role in Ecosystem
 
-- **Primary consumer:** One Liner Platform — proprietary multi-agent software development system.
-- **Moat:** cache-efficient context generation is the competitive differentiator for One Liner.
+- **Primary consumer:** проприетарная мультиагентная платформа разработки владельца (отдельный продукт, отдельный repo).
+- **Moat:** cache-efficient context generation is the competitive differentiator for that application.
 - **Backend-agnostic:** plugs as a context-generation layer in front of any code agent or model.
 - **Future secondary:** teams embedding LLM agents into their own processes.
 
 ## North Star Metric
 
-Cache hit rate (provider prompt cache) on real One Liner sessions + reduction of repeated context
+Cache hit rate (provider prompt cache) on real sessions of the primary consumer application + reduction of repeated context
 re-injection. Supporting: tokens saved via cache hits, % tests green on main (target: 100%),
 subjective: agent stops "forgetting" on long sessions.
 
@@ -58,7 +58,7 @@ subjective: agent stops "forgetting" on long sessions.
 | `docs/INDEX.md` | Current state snapshot + active beads |
 | `docs/product/next.md` | Cold-restart pointer — where we ended, what's next |
 | `docs/vision.md` | Architectural north-star |
-| `materials/discovery-oneliner-integration.md` | One Liner integration research (Phase 1B input) |
+| `materials/discovery-oneliner-integration.md` | Host-application integration research (historical Phase 1B input; filename = address) |
 | `materials/discovery-v040-consolidation.md` | v0.4.0 consolidation discovery |
 | `materials/state-strategy.md` | Strategic analysis artifact |
 | `materials/cache-optimization-logic.md` | Cache optimization design notes |

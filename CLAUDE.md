@@ -60,3 +60,7 @@ Rules:
 - It is DEAD: not the library, not the live bot. Do NOT restore it, deploy from it, or reference it as active.
 
 These are settled facts as of 2026-05-23. The old monolith is archived & dead; Altme lives in its own `altme-bot` repo. Do NOT re-investigate this separation.
+
+## Project Values
+
+@VALUES.md

@@ -18,9 +18,9 @@ DB via required `POSTGRES_URL` (no harness coupling). Blocked by: **llmems-dnh**
 the generation machine — OWNER action), **llmems-a9r** (POSTGRES_URL required fail-fast + dev-secret
 rotation — owner involved), **llmems-wji** (benchmark runbook).
 
-**⚠ One Liner DE-SCOPED from Phase 1B/1C (owner decision 2026-06-11):** no prompt.ts middleware, no
-One Liner instance on the stand. One Liner gets memory much later, after обкатка + several
-prototypes; memory is bound to the stand, the benchmark runs on it.
+**⚠ Применения продукта вынесены за scope Фазы 1B/1C (owner decision 2026-06-11):** no host-app
+middleware, no host-app instance on the stand. Integration into applications comes much later,
+after обкатка + several prototypes; memory is bound to the stand, the benchmark runs on it.
 
 **Phase 1A — COMPLETE.** `@alexmakeev/llmems` v0.4.0 published to GitHub Packages. Tag `v0.4.0`, head
 commit `79900cf` on `main`. 242 tests green. Workflow `publish.yml` run verified successful.
@@ -94,7 +94,7 @@ Blocking backlog (must resolve before `.10`): llmems-dnh (gold-set for recall), 
 password in benchmark scripts), llmems-wji (benchmark runbook).
 
 New (2026-06-11, Phase 1B fallout):
-- **llmems-q6l** (P1) — ⚠ ops: persist oneliner-stack local edits (litellm embeddings route + networks fix) into the stack repo — a Dokploy git-redeploy wipes them.
+- **llmems-q6l** (P1) — ⚠ ops: persist the shared-dev-proxy compose-stack local edits on AM32 (litellm embeddings route + networks fix) into the stack repo — a Dokploy git-redeploy wipes them.
 - **llmems-ork** (P2) — lib: BackgroundIndexer zero-topics path is fully silent (found via smoke 2) — add observability log.
 - **llmems-ns1** (P2) — ci: harness test job (45 offline tests have no enforcing gate).
 - **llmems-7ae** (P3) — harness cleanup (arch-review low findings).
@@ -122,6 +122,11 @@ delete. Re-evaluate in Phase 3 on real benchmark data.
 | `docs/vision.md` | Архитектурное видение (north-star) |
 | `docs/building-a-chat.md` | Паттерн потребителя: чат поверх llmems |
 | `docs/baseline-metric.md` | Методика и результат замера baseline |
+
+## Dev notes
+
+- Не называть compose-сервисы генерик-именами на shared docker-сетях — имя сервиса автоматически
+  становится network-алиасом и перехватывает чужой трафик (alias-инцидент; детали в llmems-q6l).
 
 ## Further Reading
 

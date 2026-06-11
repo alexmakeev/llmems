@@ -14,7 +14,7 @@ QA evidence review PASS).
 - **Cross-session recall proven live**: seed → process restart → recall surfaces the run nonce;
   dirty-DB stale-immunity proven (fresh run-scoped contextId + per-run nonce).
 - Latency p50 ~273 ms / max 896 ms vs 1500 ms budget — zero turns over.
-- One Liner de-scoped from 1B/1C (owner decision 2026-06-11) — memory bound to the stand.
+- Применения продукта вынесены за scope 1B/1C (owner decision 2026-06-11) — memory bound to the stand.
 - Epic llmems-3io children `.1`–`.9` DONE.
 
 ## Next Action
@@ -31,7 +31,7 @@ Then `.10`: cheap subset first, full run only after explicit spending confirmati
 Phase 1D (`.11`): report + decision; MUST include the G3 blind-spot note
 (`materials/plan-phase1b.md` §Carry to 1D — failure paths offline-proven only).
 
-Ops risk to not forget: **llmems-q6l (P1)** — oneliner-stack local edits on AM32 die on redeploy.
+Ops risk to not forget: **llmems-q6l (P1)** — shared-dev-proxy compose-stack local edits on AM32 die on redeploy.
 
 ## Must Read
 
