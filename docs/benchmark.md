@@ -1,111 +1,98 @@
 # Benchmark Pipeline Runbook
 
 **Bead:** llmems-3io.10 (Phase 1C — long-memory recall benchmark)
-**Blockers:** llmems-dnh (questions file on this machine) · llmems-a9r (env hardening + script promotion) · llmems-wji (this runbook)
+**Blockers:** llmems-dnh (gold set on this machine) · llmems-a9r (env hardening) · llmems-ad0 (corpus migration to stand) · llmems-g3a (vectorRecall script) · llmems-wji (this runbook)
 **Spend envelope:** $5 hard cap on the scoped LiteLLM key; ~$1 total target shared with the Phase 1B smoke.
 
 ---
 
 ## 1. Overview
 
-The 1C benchmark measures long-term recall quality of `@alexmakeev/llmems` on the AM32 stand DB.
-It compares two recall strategies on the same frozen question set:
+The 1C benchmark measures long-term recall quality of `@alexmakeev/llmems` on the AM32 stand DB
+using **vectorRecall** (cosine ANN on mem embeddings).
 
-| Arm | Strategy |
-|-----|----------|
-| **A — baseline** | Standard `vectorRecall` (cosine ANN on mem embeddings) |
-| **B — challenger** | Per-axis MECE projection recall (cosine on `mem_projections` per semantic axis) |
-
-**Canonical script:** `scripts/benchmark/test-projection-recall.ts`
-(Promoted from `scripts/test-projection-recall.ts` under bead llmems-a9r. Imports from `../../src/`.)
+**Canonical script:** `scripts/benchmark/benchmark-recall.ts` (bead llmems-g3a)
 
 **Env handling:** all required variables enforced via `scripts/lib/require-env.ts` — fail-fast,
-no defaults by design.
+no defaults by design (a9r).
 
 **Boundary with the harness (D13):** the harness (`harness/`) is smoke-only — it proves
-cross-session memory works live. The benchmark is a separate script; there is zero coupling
-between them.
+cross-session memory works live. The benchmark is a separate script; there is zero coupling.
 
 ---
 
 ## 2. Prerequisites
 
-All four must be resolved before running `.10`:
+All five must be resolved before running `.10`:
 
-### 2.1 Questions file on this machine (bead llmems-dnh)
+### 2.1 Gold set on this machine (bead llmems-dnh)
 
-The frozen question set (`recall-test-questions.json`) lives on the **generation machine** and
-has never been committed to git (intentionally untracked — gitignored). It contains the test
-questions with `expected_facts` used by both arms of the benchmark.
+The frozen gold set lives on the **generation machine** and is intentionally untracked (gitignored).
+It contains questions (as JSON keys) with their expected mem IDs and LLM-judged coverage.
 
-**Owner action required** to transfer the file to this machine. Once transferred:
+**Owner action required** to transfer the file to this machine. Once transferred, point
+`BENCHMARK_GOLDSET_FILE` at it (e.g. `sandboxes/gold-set-4.json`).
 
-```bash
-export BENCHMARK_QUESTIONS_FILE=/path/to/recall-test-questions.json
-```
+Record the SHA256 on first transfer — this becomes the canonical freeze identifier (§3).
 
-No script edit needed — `BENCHMARK_QUESTIONS_FILE` is a required env var enforced by
-`scripts/lib/require-env.ts`. See §3 for the FREEZE invariant.
+> **SHA caveat:** the gold-set SHA was not canonically recorded at generation time (May 2026).
+> Authenticity of the transferred file rests on provenance (same file from the generation
+> machine), not cryptographic verification. The first SHA recorded on transfer (dnh) becomes
+> the canonical reference going forward.
 
 ### 2.2 POSTGRES_URL required, no default (bead llmems-a9r)
 
-`POSTGRES_URL` is required, no fallback. The script exits immediately if unset or empty.
+`POSTGRES_URL` is required, no fallback. The script exits immediately if unset or empty
+(`scripts/lib/require-env.ts`: `"${name} is required but not set. Export it before running..."`).
 
-> **TBD — fill in when a9r merges:** exact error message produced by `scripts/lib/require-env.ts`
-> on a missing `POSTGRES_URL`, and the line number in the promoted script.
+### 2.3 Stand DB: corpus present (bead llmems-ad0)
 
-Export the AM32 stand DB URL before running:
-
-```bash
-export POSTGRES_URL=postgresql://...
-```
-
-### 2.3 Stand DB: mems table populated
-
-The `mems` table for `MEMSTORE_ID=4` must contain the benchmark corpus. Verify:
+The stand must contain the benchmark corpus. Verify:
 
 ```bash
-psql "$POSTGRES_URL" -c "SELECT count(*) FROM mems WHERE memstore_id=4;"
+psql "$POSTGRES_URL" -c "SELECT count(*) FROM mems WHERE memstore_id=$MEMSTORE_ID;"
 ```
 
-If the count is 0, the benchmark has no data — stop. See §2.4.
+> **Before ad0 lands:** query may succeed but return 0 — there is no benchmark corpus on the
+> stand yet. Run `.10` only after ad0 migration is complete.
 
-### 2.4 Corpus + mem_projections migration to stand — bead TBD (escalated)
+### 2.4 Corpus migration to stand — bead llmems-ad0
 
-> **Open prerequisite — blocked on team-lead decision.**
+> **Open prerequisite.**
 >
-> The AM32 stand DB currently holds only the 5-table schema and Phase 1B smoke data (harness
-> runs). It does **not** contain the benchmark corpus (`memstore_id=4`, ~71 mems from the
-> `benchmark-katya-year` conversation) and the `mem_projections` table does not exist on the
-> stand.
->
-> Without the corpus, arm A (vectorRecall) returns zero results. Without `mem_projections`,
-> arm B (per-axis projection) fails at query time (lines 289, 412 in the script).
->
-> This is a blocking gap that must be resolved by a dedicated bead (corpus import + projection
-> extraction to the stand). That bead is TBD — team-lead is deciding scope and sequencing.
-> Until it lands, `.10` cannot run a meaningful benchmark on the stand.
+> The AM32 stand DB currently holds only the 5-table schema and Phase 1B smoke data. The
+> benchmark corpus (`memstore_id=4`, ~71 mems from `benchmark-katya-year`) has not been
+> migrated. Bead llmems-ad0 covers corpus-only migration. Until ad0 lands, vectorRecall
+> returns zero results.
+
+### 2.5 New vectorRecall script ready (bead llmems-g3a)
+
+`scripts/benchmark/benchmark-recall.ts` must be written, reviewed, and merged before `.10`
+can run. The old `scripts/test-projection-recall.ts` imports graph modules removed in the
+v0.4.0 pure-memory cleanup and cannot compile against current `main`.
 
 ---
 
 ## 3. Gold-Set FREEZE Invariant
 
-> **FREEZE rule: `recall-test-questions.json` (the frozen question set) MUST NOT be regenerated
-> between A-arm and B-arm runs, or between any two runs being compared.**
+> **FREEZE rule: the gold-set file (pointed to by `BENCHMARK_GOLDSET_FILE`) MUST NOT be
+> regenerated between runs being compared.**
 
-The A/B comparison is valid only when both arms are evaluated against the **identical** question
-set and `expected_facts` lists. Any change to the file — even adding or removing one question —
-invalidates all prior comparisons.
+Any change to the file — question text, expected mem IDs, or coverage map — invalidates all
+prior comparisons, including the comparison against the May 2026 archived results (§9).
 
 **Operational rules:**
 
-1. Before each run, record `sha256sum "$BENCHMARK_QUESTIONS_FILE"` in your benchmark log.
-2. The SHA recorded when bead dnh lands is the **canonical question-set SHA** for this benchmark.
-3. Verify the SHA matches before every run. Mismatch → stop and investigate.
-4. Any regeneration or edit to the file constitutes a **new experiment**: both arms must be
-   re-run from scratch. Prior results are not comparable.
-5. Archive run results with the SHA in the filename:
-   `materials/bench-YYYYMMDD-<sha7>-<arm>.json`
+1. Before each run: `sha256sum "$BENCHMARK_GOLDSET_FILE"` — record in your log.
+2. The SHA recorded when bead dnh lands is the **canonical gold-set SHA** going forward.
+3. Mismatch on any subsequent run → stop and investigate.
+4. Any regeneration = new experiment: all prior results non-comparable.
+5. Archive run results: `materials/bench-YYYYMMDD-<sha7>-<TEST_NAME>.json`
+
+> **SHA provenance note:** the gold-set SHA was not recorded at May 2026 generation time.
+> The first SHA recorded on transfer (dnh) becomes the canonical reference. This means the
+> May 2026 results and the first live run share a provenance assumption, not a verified hash
+> match — document this in the 1D report.
 
 ---
 
@@ -117,44 +104,40 @@ All required variables enforced via `scripts/lib/require-env.ts` (fail-fast, no 
 
 | Variable | Description |
 |----------|-------------|
-| `POSTGRES_URL` | AM32 stand DB connection string. Required, no default. **TBD — see §2.2 for exact fail-fast wording once a9r merges.** |
-| `BENCHMARK_QUESTIONS_FILE` | Absolute path to `recall-test-questions.json` (transferred from generation machine, bead dnh). Required, no default. |
-| `LITELLM_BASE_URL` | LiteLLM endpoint on the AM32 stand (e.g. `http://AM32:4000`). Required, no default. **TBD — sync with developer for exact env var name.** The script currently hardcodes `https://openrouter.ai/api/v1` (line 661); this becomes configurable under a9r. |
-| `LITELLM_API_KEY` | Scoped `llmems-teststand` LiteLLM key ($5 hard cap). Required, no default. **TBD — sync with developer for exact env var name.** |
+| `POSTGRES_URL` | AM32 stand DB connection string. Required, no default. |
+| `MEMSTORE_ID` | Integer ID of the memstore to benchmark (e.g. `4`). Enforced via `requireEnvInt`. Used to verify the memstore row exists and to validate the gold set belongs to this corpus (`goldSet.memstoreId === MEMSTORE_ID`). |
+| `BENCHMARK_GOLDSET_FILE` | Path to the frozen gold-set JSON (e.g. `sandboxes/gold-set-4.json`). Required, no default. The script validates the file exists before running; fails fast with a clear message if missing. Never regenerate between compared runs. |
+| `BENCHMARK_LLM_BASE_URL` | LiteLLM endpoint on the AM32 stand (e.g. `http://127.0.0.1:14999/v1`). The stand routes embeddings through LiteLLM — **not** OpenRouter directly. |
+| `BENCHMARK_LLM_API_KEY` | Scoped `llmems-teststand` LiteLLM key ($5 hard cap). |
+| `BENCHMARK_EMBEDDING_MODEL` | Embedding model name as known to LiteLLM (e.g. `openai-embedding-small` on the stand; was `openai/text-embedding-3-small` on the generation machine). No default — must match the route explicitly; see §6.1 validity condition. |
 
-> Provider note: the stand has **no direct OpenRouter embeddings** — all inference goes through
-> the LiteLLM proxy (the `openai-embedding-small` route provisioned in bead .7). The key
-> above is the scoped teststand key, not a raw OpenRouter key. Verify the LiteLLM route name
-> matches the model string in the script (`openai/text-embedding-3-small`) — see §6 validity
-> condition on embedding space.
+### Optional
 
-### Hardcoded script constants (not env vars — edit only if targeting a different corpus)
-
-| Constant | Value | Change when |
-|----------|-------|-------------|
-| `MEMSTORE_ID` | `4` | Only if targeting a different memstore |
-| `CONTEXT_ID` | `'benchmark-katya-year'` | Only if targeting a different corpus |
-| `RESULTS_FILE` | `sandboxes/projection-test-results.json` (repo-relative) | Output file; gitignored |
-| `PROJECTION_THRESHOLD` | `0.3` | Minimum cosine similarity to collect an axis match |
-| `PROJECTION_HIT_THRESHOLD` | `0.5` | Threshold for counting a question as "hit" on an axis |
-| `PROJECTION_LIMIT` | `5` | Max axis matches per question per axis |
-| `VECTOR_RECALL_LIMIT` | `10` | Max mems returned by `vectorRecall` |
-| `API_DELAY_MS` | `500` ms | Delay between embedding API calls (rate-limit guard) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QUESTION_LIMIT` | *(all)* | Cap the number of questions sampled. Use `QUESTION_LIMIT=20` for the cheap-subset first pass (§5.4). Unset = run all questions. |
+| `TEST_NAME` | `baseline` | Label for this run; used in the output filename `sandboxes/benchmark-{TEST_NAME}.json`. |
 
 ---
 
 ## 5. Step Order
 
+> **All commands in §5 assume all blockers have landed**, in particular bead llmems-g3a
+> (which creates `scripts/benchmark/benchmark-recall.ts`). The script path is confirmed by the
+> developer; the entrypoint file does not yet exist in the repo. Do not attempt to run until
+> the §5.1 checklist clears.
+
 ### 5.1 Pre-run checklist
 
-- [ ] Blockers resolved: dnh (questions file transferred), a9r (script promoted, env hardening done), §2.4 corpus + projections on stand
+- [ ] All blockers resolved: dnh, a9r, ad0, g3a, wji
 - [ ] `POSTGRES_URL` exported; connectivity: `psql "$POSTGRES_URL" -c "SELECT 1;"`
-- [ ] `BENCHMARK_QUESTIONS_FILE` exported; file present and SHA recorded
-- [ ] `LITELLM_BASE_URL` and `LITELLM_API_KEY` exported (TBD exact names — sync with developer)
-- [ ] LiteLLM `openai-embedding-small` route healthy on AM32
-- [ ] Stand DB has mems: `SELECT count(*) FROM mems WHERE memstore_id=4;`
-- [ ] Stand DB has projections: `SELECT count(*) FROM mem_projections WHERE memstore_id=4;`
-- [ ] LiteLLM spend logs checked; remaining budget > target for this run (~$0.50 per run)
+- [ ] `MEMSTORE_ID` exported (e.g. `export MEMSTORE_ID=4`)
+- [ ] `BENCHMARK_GOLDSET_FILE` exported and file exists; SHA recorded:
+  `sha256sum "$BENCHMARK_GOLDSET_FILE"`
+- [ ] `BENCHMARK_LLM_BASE_URL`, `BENCHMARK_LLM_API_KEY`, `BENCHMARK_EMBEDDING_MODEL` exported
+- [ ] LiteLLM embedding route healthy on AM32 stand
+- [ ] Corpus present: `SELECT count(*) FROM mems WHERE memstore_id=$MEMSTORE_ID;` → non-zero
+- [ ] LiteLLM spend logs checked; remaining budget sufficient (~$0.50 per run)
 
 ### 5.2 Run the benchmark
 
@@ -163,135 +146,147 @@ cd /home/alexmak/llmems/main
 
 # Verify required env
 echo "POSTGRES_URL:              ${POSTGRES_URL:?required}"
-echo "BENCHMARK_QUESTIONS_FILE:  ${BENCHMARK_QUESTIONS_FILE:?required}"
-# TBD: add LITELLM_BASE_URL / LITELLM_API_KEY checks here once names confirmed
+echo "MEMSTORE_ID:               ${MEMSTORE_ID:?required}"
+echo "BENCHMARK_GOLDSET_FILE:    ${BENCHMARK_GOLDSET_FILE:?required}"
+echo "BENCHMARK_LLM_BASE_URL:    ${BENCHMARK_LLM_BASE_URL:?required}"
+echo "BENCHMARK_LLM_API_KEY:     ${BENCHMARK_LLM_API_KEY:?required}"
+echo "BENCHMARK_EMBEDDING_MODEL: ${BENCHMARK_EMBEDDING_MODEL:?required}"
 
 # Record gold-set SHA before each run
-sha256sum "$BENCHMARK_QUESTIONS_FILE"
+sha256sum "$BENCHMARK_GOLDSET_FILE"
 
-# Run the benchmark
-npx tsx scripts/benchmark/test-projection-recall.ts
+# Run (full run)
+npx tsx scripts/benchmark/benchmark-recall.ts
 ```
 
-**Phase 1 — Re-embed mems** (auto-skipped if all mems already have embeddings):
-Queries mems with `NULL embedding` for `MEMSTORE_ID=4`. Embeds in batches of 50 via
-`openai/text-embedding-3-small` (1536-dim) through the LiteLLM proxy. One-time cost; skipped
-on subsequent runs.
+The script executes in a single phase:
+1. **Config setup** — fail-fast validation of all required env vars.
+2. **Corpus verification** — looks up `memstores WHERE id=$MEMSTORE_ID`; fails fast if memstore is
+   missing (avoids silently benchmarking an empty corpus). Logs embedded mem count.
+3. **vectorRecall per question** — for each question in the gold set (up to `QUESTION_LIMIT`):
+   - Embeds the question text via `BENCHMARK_LLM_BASE_URL` using `BENCHMARK_EMBEDDING_MODEL`
+   - Verifies the embedding dimension is exactly 1536 (fails fast on mismatch = wrong model space)
+   - Runs vectorRecall (cosine ANN against stored mem embeddings via `searchMemsByVector`)
+   - Records `recallAt5`, `recallAt10`, `precisionAt5`, `precisionAt10` per question
+4. **Aggregate + output** — computes `aggregate.recallAt5/recallAt10/precisionAt5/precisionAt10`
+   across evaluated questions; computes `deviation` vs archived baseline (R@5 0.524 / R@10 0.668);
+   writes `sandboxes/benchmark-${TEST_NAME:-baseline}.json`; prints a console summary.
 
-**Phase 2 — Recall per question:**
-Samples ~20 representative questions from `BENCHMARK_QUESTIONS_FILE` (evenly distributed
-across categories, ~3–4 per category). For each question:
-- Embeds the question via the LiteLLM proxy
-- **Arm A:** runs `vectorRecall` (ANN, up to `VECTOR_RECALL_LIMIT` results)
-- **Arm B:** runs per-axis cosine similarity against `mem_projections` for all 7 semantic axes
-- Also runs `graphEnrichedRecall` (informational; graph experiment on pause)
-- Records counts and similarities for all arms
-
-**Phase 3 — Aggregate statistics:**
-Per-axis `hitRate`, `avgSimilarity`, similarity distribution buckets, per-category breakdown,
-overall `vectorOnlyHitRate` and `projectionHitRate`. Writes `sandboxes/projection-test-results.json`
-and prints a human-readable summary to stdout.
+Console output looks like:
+```
+vectorRecall arm (N evaluated, M excluded):
+  recall@5  = 0.524  (archived 0.524, deviation 0.000)
+  recall@10 = 0.668  (archived 0.668, deviation 0.000)
+  precision@5 = X.XXX, precision@10 = X.XXX
+Results written: sandboxes/benchmark-baseline.json
+```
 
 ### 5.3 Record results
 
 After each run:
-1. Copy `sandboxes/projection-test-results.json` →
-   `materials/bench-YYYYMMDD-<questions-sha7>-<arm-label>.json`
-2. Note in benchmark log: questions SHA, `MEMSTORE_ID`, `CONTEXT_ID`, run timestamp,
-   `vectorOnlyHitRate`, `projectionHitRate`, per-axis hitRate table, total spend (LiteLLM spend logs)
+1. Copy `sandboxes/benchmark-${TEST_NAME:-baseline}.json` → `materials/bench-YYYYMMDD-<sha7>-${TEST_NAME:-baseline}.json`
+2. Record in benchmark log: gold-set SHA, `MEMSTORE_ID`, run timestamp, `aggregate.recallAt5`,
+   `aggregate.recallAt10`, `deviation.recallAt5`, `deviation.recallAt10`, total spend (LiteLLM
+   spend logs)
+
+### 5.4 Cheap subset first (CHARTER: incremental validation before costly scaling)
+
+Run with a question cap before committing to the full set:
+
+```bash
+QUESTION_LIMIT=20 npx tsx scripts/benchmark/benchmark-recall.ts
+```
+
+Inspect results and verify spend is within budget before running without `QUESTION_LIMIT`.
 
 ---
 
-## 6. A/B Procedure
+## 6. Validity Conditions and Sanity Gate
 
-### Validity conditions (all must hold before treating results as comparable)
+### 6.1 Validity conditions (all must hold before treating results as meaningful)
 
-1. **Questions SHA identical** across compared runs — verify before each run (§3).
-2. **Same `MEMSTORE_ID` and `CONTEXT_ID`** — same corpus, same DB state.
-3. **Same embedding space** — question embeddings MUST use the same underlying model and
-   dimension as the corpus mems. Current model: `openai/text-embedding-3-small`, 1536-dim
-   via LiteLLM. Verify the LiteLLM route resolves to this model before every run; a model
-   mismatch silently produces meaningless hitRate numbers (queries in a different vector space).
-4. **Re-embedding consistent** — Phase 1 must be fully complete before both arms' data
-   is produced. Do not run Phase 1 for only one arm.
-5. **DB frozen between compared runs** — no mems added, removed, or re-embedded between
-   the two runs being compared.
+1. **Gold-set SHA** matches canonical (§3) — verify before every run.
+2. **Same `MEMSTORE_ID`** — same corpus, same DB state.
+3. **Embedding space identical** — question embeddings MUST be produced by the same underlying
+   model and dimension as the corpus mems' stored embeddings (`text-embedding-3-small` family,
+   1536-dim). Verify that `BENCHMARK_EMBEDDING_MODEL` resolves to this model before every run.
+   The script validates dimension (1536) client-side and aborts on mismatch — but model identity
+   beyond the name cannot be verified client-side. Check the LiteLLM route mapping on the AM32
+   stand explicitly.
+4. **DB frozen between compared runs** — no mems added, removed, or re-embedded between runs
+   being compared.
+5. **Gold-set memstoreId match** — the script validates `goldSet.memstoreId === MEMSTORE_ID`
+   at startup; a mismatch aborts with a clear error.
 
-### Metrics to report (minimum)
+### 6.2 Sanity gate: expected reproduction range
 
-Both arm A and arm B metrics are in the same output file. Report side-by-side:
+The first live run should reproduce approximately:
 
-| Metric | Arm A (vectorRecall) | Arm B (projection) |
-|--------|---------------------|---------------------|
-| `vectorOnlyHitRate` | ✓ | — |
-| `projectionHitRate` | — | ✓ |
-| Per-axis `hitRate` (7 axes) | — | ✓ |
-| Per-axis `avgSimilarity` | — | ✓ |
-| `avgVectorRecallCount` | ✓ | — |
-| `graphEnrichedCount` delta | informational only | informational only |
+| Metric | May 2026 recorded value | Acceptable range |
+|--------|------------------------|-----------------|
+| `aggregate.recallAt5` | **0.524** | 0.47 – 0.58 |
+| `aggregate.recallAt10` | **0.668** | 0.62 – 0.72 |
 
-`graphEnrichedCount` delta is **informational only** — the graph scoring is known-broken
-(bead llmems-76f: `edge.relevance` not comparable to query cosine, floods top-K). Do not
-use graph metrics as a decision signal for Phase 1D.
+> Ranges are an operational heuristic (~±5 questions of 100), not derived from May run variance
+> (raw distributions lost — see §9 caveat 2).
 
-### Spending note
-
-Each run embeds ~20 questions via the LiteLLM proxy. If Phase 1 triggers (NULL embeddings
-present), it also embeds all mems for `MEMSTORE_ID=4` (~71 mems at last count). Total envelope:
-$5 hard cap on the scoped key, shared with Phase 1B smoke (~$0.016 used). Stop and report to
-owner if remaining budget approaches $0.50.
+Material deviation outside the acceptable range indicates migration or embedding-route drift —
+stop and investigate before recording results. Do not proceed to Phase 1D until the sanity gate
+passes or the deviation is explained and documented.
 
 ---
 
-## 7. Gold-Set Provenance and Methodology
+## 7. Gold-Set Provenance and Schema
 
 ### Provenance (bead llmems-dnh)
 
-The question set (`recall-test-questions.json`) was assembled on the **generation machine**
-from the `benchmark-katya-year` conversation corpus. It has never been committed to git and
-is intentionally untracked.
+The gold set was generated **once** on the **generation machine** from the `benchmark-katya-year`
+corpus. It is intentionally untracked (gitignored) and has never been committed to git.
 
 Current state: file lives on generation machine only. Transfer is a **manual owner action**
-(bead dnh). Until transferred, bead .10 cannot run.
-
-After transfer: file is placed anywhere on this machine and referenced via
-`BENCHMARK_QUESTIONS_FILE` (no repo path required). Record the SHA256; this becomes the
+(bead dnh). Until transferred, bead `.10` cannot run. After transfer, record the SHA256 as the
 canonical freeze identifier (§3).
 
-### File structure
+### Schema
+
+The gold-set JSON has the following structure (from `scripts/benchmark/lib/benchmark-core.ts`):
 
 ```json
 {
-  "questions": [
-    {
-      "id": "<string>",
-      "category": "<string>",
-      "question": "<string>",
-      "difficulty": "<string>",
-      "expected_facts": ["<fact string>", "..."]
+  "memstoreId": 4,
+  "generatedAt": "2026-MM-DDTHH:MM:SSZ",
+  "judgeModel": "<model name used to judge coverage>",
+  "questions": {
+    "<question text>": {
+      "expectedMemIds": ["<mem_id_1>", "<mem_id_2>"]
     }
-  ]
+  }
 }
 ```
 
-~100 questions across 6 categories. The benchmark samples ~20 evenly (~3–4 per category);
-statistics are computed over the sampled subset.
+Keys in `questions` are the **question text strings** (not numeric IDs). The benchmark embeds
+each key directly. `expectedMemIds` lists the mem IDs (from the DB) that should be recalled for
+that question.
 
-### How the questions and expected_facts were built (from FAQ 2026-05-19)
+The script validates on load:
+- `questions` is an object
+- `goldSet.memstoreId === MEMSTORE_ID` (prevents running the wrong corpus's gold set)
+- every question entry has `expectedMemIds[]`
+
+### Generation methodology (from FAQ 2026-05-19)
 
 Two options were discussed for building the gold standard:
 
 **Option A — date heuristic (free, coarse):**
-Expected facts derived from the raw conversation content; relevance threshold set by date.
+Expected facts derived from the raw conversation content; relevance by date.
 Zero cost; not validated against actual mem coverage.
 
-**Option B — LLM judge (one-time cost, more precise):**
-Gemini Flash judges which mems actually cover each `expected_fact`. The coverage map is
-frozen as authoritative. Recommended in the FAQ discussion.
+**Option B — LLM judge (one-time cost, recommended):**
+Gemini Flash judges which mems actually cover each expected fact. The coverage map is frozen
+as authoritative.
 
-The exact methodology used at generation time is not recorded in available project files.
-**Do not attempt to re-derive** using a different methodology — it would invalidate all
-prior benchmark comparisons.
+The exact option used at generation time is not recorded in available project files.
+**Do not regenerate** using a different methodology — it would invalidate all prior comparisons.
 
 ---
 
@@ -301,16 +296,44 @@ These are two distinct pipelines (D13). Do not couple them.
 
 | | Harness (Phase 1B / bead .9) | Benchmark (Phase 1C / bead .10) |
 |---|---|---|
-| **Purpose** | Smoke: prove cross-session memory works live | Measure recall quality (vectorRecall vs projection) |
-| **Script** | `harness/` CLI — `seed` + `recall` phases | `scripts/benchmark/test-projection-recall.ts` |
-| **DB content** | Run-scoped fresh `contextId` + nonce mems | Long-lived corpus (`benchmark-katya-year`, `memstore_id=4`) |
-| **Assert** | Deterministic nonce match (planted fact) | `hitRate` statistics over sampled question set |
-| **Questions file** | Not used | Required via `BENCHMARK_QUESTIONS_FILE` (bead dnh) |
+| **Purpose** | Smoke: prove cross-session memory works live | Measure vectorRecall quality |
+| **Script** | `harness/` CLI — `seed` + `recall` phases | `scripts/benchmark/benchmark-recall.ts` |
+| **DB content** | Run-scoped fresh `contextId` + nonce mems | Long-lived corpus (`benchmark-katya-year`, `MEMSTORE_ID=4`) |
+| **Assert** | Deterministic nonce match (planted fact) | `aggregate.recallAt5 / recallAt10` statistics vs gold set |
+| **Gold set** | Not used | `BENCHMARK_GOLDSET_FILE` (bead dnh) |
 | **Spend** | ~$0.016 spent (bead .9) | Within remaining $5 cap (~$1 target) |
 
 ---
 
-*Open TBDs before wji can close (keep bead OPEN):*
-*— §2.2: POSTGRES_URL fail-fast wording — fills in when a9r merges.*
-*— §4: `LITELLM_BASE_URL` / `LITELLM_API_KEY` exact env var names — sync with developer.*
-*— §2.4: corpus + mem_projections migration bead — TBD, blocked on team-lead decision.*
+## 9. Archived Projection/Graph Results (May 2026)
+
+The May 2026 benchmark compared vectorRecall against per-axis MECE projection recall and
+strict-MECE aggregation on the `benchmark-katya-year` corpus. Those scripts imported graph
+modules removed from `main` by the v0.4.0 pure-memory cleanup; they cannot compile against
+current `main`.
+
+**Summary of May 2026 recorded results** (source: `docs/axis-experiment.md`):
+
+| Strategy | R@5 | R@10 |
+|----------|-----|------|
+| vectorRecall (baseline) | 0.524 | 0.668 |
+| SumAcrossAxes projection | 0.369 | — |
+| strict-MECE | 0.241 | — |
+| Graph-enriched | *excluded* — scoring broken (bead llmems-76f) | |
+
+**Two honest caveats for Phase 1D comparison:**
+1. **SHA not recorded:** the gold-set SHA was never canonically recorded in May. The comparison
+   between live results and May results rests on provenance (same file from generation machine),
+   not cryptographic identity.
+2. **Raw results lost:** the result JSONs from May are not available. Only the summary table
+   above survives. Per-question breakdowns and per-axis distributions cannot be reconstructed.
+
+The Phase 1D report (bead .11) will compare the live vectorRecall run against these archived
+numbers, with both caveats stated verbatim.
+
+For historical context on the projection/graph experiments, see `docs/axis-experiment.md`.
+
+---
+
+*Open TBD — wji stays open until resolved:*
+*— §7 generation methodology: exact option (A or B) used at generation time not recorded in project files.*
