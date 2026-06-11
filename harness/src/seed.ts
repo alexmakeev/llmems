@@ -12,7 +12,7 @@ import { runTurn, type FactoryLike } from './turn-pipeline.js';
 import type { RunScope } from './run-scope.js';
 
 export interface MemStoreLike {
-  getClosedMems(contextId: string, limit?: number): Promise<unknown[]>;
+  getClosedMems(contextId: string, limit?: number): Promise<{ summary: string }[]>;
 }
 
 export interface RunState {
@@ -40,30 +40,39 @@ export interface WaitOptions {
   logger: HarnessLogger;
 }
 
+/**
+ * D12-rev §5 strengthened predicate: seed passes only when at least one mem of
+ * THIS run's contextId carries the run nonce in its summary — i.e. the nonce
+ * survived summarization. "Any mem rows" is not enough: a mem digested from a
+ * non-nonce block would otherwise green-light a recall that cannot pass.
+ */
 export async function waitForMems(
   store: MemStoreLike,
   contextId: string,
+  nonce: string,
   opts: WaitOptions,
 ): Promise<number> {
   const now = opts.now ?? Date.now;
   const start = now();
   for (;;) {
     const mems = await store.getClosedMems(contextId);
+    const nonceMems = mems.filter((m) => m.summary.includes(nonce)).length;
     const waitedMs = now() - start;
-    if (mems.length > 0) {
+    if (nonceMems > 0) {
       opts.logger.event('harness.seed_poll', {
-        contextId, mems: mems.length, waitedMs, status: 'ok',
+        contextId, mems: mems.length, nonceMems, waitedMs, status: 'ok',
       });
       return mems.length;
     }
     if (waitedMs >= opts.timeoutMs) {
       opts.logger.event('harness.seed_poll', {
-        contextId, mems: 0, waitedMs, status: 'timeout',
+        contextId, mems: mems.length, nonceMems: 0, waitedMs, status: 'timeout',
       });
       throw new Error(
-        `SEED FAILED: no mem rows for contextId=${contextId} after ${opts.timeoutMs}ms — ` +
-          'BackgroundIndexer did not digest chunks into mems. ' +
-          'Check llmems.* logs, LiteLLM availability and the scoped key budget. ' +
+        `SEED FAILED: no nonce-bearing mem for contextId=${contextId} after ${opts.timeoutMs}ms ` +
+          `(closed mems for this run: ${mems.length}; none contains the run nonce). ` +
+          'Either the BackgroundIndexer did not digest the nonce block, or the nonce ' +
+          'did not survive summarization. Check llmems.* logs and LiteLLM. ' +
           'Run state was NOT written; recall must not be attempted for this run.',
       );
     }
@@ -103,7 +112,7 @@ export async function runSeed(opts: RunSeedOptions): Promise<RunState> {
     if (result.degraded) degradedTurns += 1;
   }
 
-  const memCount = await waitForMems(store, scope.contextId, {
+  const memCount = await waitForMems(store, scope.contextId, scope.nonce, {
     timeoutMs: config.seedPollTimeoutMs,
     intervalMs: config.seedPollIntervalMs,
     sleep: opts.sleep ?? defaultSleep,

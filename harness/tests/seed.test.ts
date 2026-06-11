@@ -15,17 +15,22 @@ const SCOPE = {
   nonce: 'шифр-равемило-1234',
 };
 
-describe('waitForMems (D16 deterministic indexing wait)', () => {
-  it('resolves with mem count once rows appear', async () => {
+const memWithNonce = { summary: `Кодовое имя стенда — «сирень-${SCOPE.nonce}», главный факт темы.` };
+const memWithoutNonce = { summary: 'Обсуждение отпуска на Алтае: Чемал и Телецкое озеро.' };
+
+describe('waitForMems (D16 + D12-rev §5: nonce-bearing mem predicate)', () => {
+  it('resolves once a mem whose summary CONTAINS the nonce appears', async () => {
     const { logger } = captureLogger();
     let polls = 0;
     const store = {
-      getClosedMems: vi.fn(async () => (++polls >= 3 ? [{ id: '1' }, { id: '2' }] : [])),
+      getClosedMems: vi.fn(async () =>
+        ++polls >= 3 ? [memWithoutNonce, memWithNonce] : [],
+      ),
     };
     let clock = 0;
     const sleep = vi.fn(async (ms: number) => void (clock += ms));
 
-    const count = await waitForMems(store, SCOPE.contextId, {
+    const count = await waitForMems(store, SCOPE.contextId, SCOPE.nonce, {
       timeoutMs: 60000, intervalMs: 1000, sleep, now: () => clock, logger,
     });
 
@@ -33,14 +38,34 @@ describe('waitForMems (D16 deterministic indexing wait)', () => {
     expect(store.getClosedMems).toHaveBeenCalledTimes(3);
   });
 
-  it('times out LOUDLY: throws with contextId in message, never exits silently', async () => {
+  it('keeps polling when mems exist but NONE carries the nonce (stale/foreign mems)', async () => {
+    const { logger, entries } = captureLogger();
+    const store = { getClosedMems: vi.fn(async () => [memWithoutNonce]) };
+    let clock = 0;
+    const sleep = vi.fn(async (ms: number) => void (clock += ms));
+
+    await expect(
+      waitForMems(store, SCOPE.contextId, SCOPE.nonce, {
+        timeoutMs: 5000, intervalMs: 1000, sleep, now: () => clock, logger,
+      }),
+    ).rejects.toThrowError(new RegExp(SCOPE.contextId));
+
+    expect(store.getClosedMems.mock.calls.length).toBeGreaterThan(1);
+    const poll = entries.filter((e) => e.event === 'harness.seed_poll');
+    expect(poll.at(-1)?.fields['status']).toBe('timeout');
+    // diagnostics distinguish "no mems at all" from "mems without nonce"
+    expect(poll.at(-1)?.fields['mems']).toBe(1);
+    expect(poll.at(-1)?.fields['nonceMems']).toBe(0);
+  });
+
+  it('times out LOUDLY with contextId in message when no mems appear at all', async () => {
     const { logger, entries } = captureLogger();
     const store = { getClosedMems: vi.fn(async () => []) };
     let clock = 0;
     const sleep = vi.fn(async (ms: number) => void (clock += ms));
 
     await expect(
-      waitForMems(store, SCOPE.contextId, {
+      waitForMems(store, SCOPE.contextId, SCOPE.nonce, {
         timeoutMs: 5000, intervalMs: 1000, sleep, now: () => clock, logger,
       }),
     ).rejects.toThrowError(new RegExp(SCOPE.contextId));
@@ -57,7 +82,7 @@ describe('runSeed', () => {
       remember: vi.fn(async () => undefined),
       getLongTermContext: vi.fn(async () => 'контекст'),
     };
-    const store = { getClosedMems: vi.fn(async () => [{ id: 'm1' }]) };
+    const store = { getClosedMems: vi.fn(async () => [memWithNonce]) };
     const written: RunState[] = [];
     return {
       logger, entries, factory, store, written,
@@ -70,7 +95,7 @@ describe('runSeed', () => {
     };
   }
 
-  it('runs one turn per fixture line, polls mems, then writes run state (D16 order)', async () => {
+  it('runs one turn per fixture line, polls nonce-bearing mems, then writes run state', async () => {
     const d = deps();
     const fixture = buildFixture(SCOPE.nonce);
 
@@ -89,9 +114,9 @@ describe('runSeed', () => {
     expect(d.entries.some((e) => e.event === 'harness.seed_done')).toBe(true);
   });
 
-  it('does NOT write run state when the mems poll times out (loud failure)', async () => {
+  it('does NOT write run state when the poll never sees a nonce-bearing mem', async () => {
     const d = deps();
-    d.store.getClosedMems = vi.fn(async () => []);
+    d.store.getClosedMems = vi.fn(async () => [memWithoutNonce]);
     const fixture = buildFixture(SCOPE.nonce);
 
     await expect(
