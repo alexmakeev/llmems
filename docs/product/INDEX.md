@@ -1,6 +1,6 @@
 # llmems — Product Memory
 
-CEO product-memory. Updated: 2026-06-09.
+CEO product-memory. Updated: 2026-06-11.
 
 ## Product Definition
 
@@ -27,6 +27,22 @@ CEO product-memory. Updated: 2026-06-09.
 - `getCurrentContextParts()` — structured 3-part view exposing stable/dynamic/tail boundary (for cache-hint injection)
 - `getLongTermContext()` — long-term-only mode, excludes active raw tail
 
+## Phase Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1A (merge + publish) | COMPLETE | v0.4.0 published |
+| 1B (test-stand integration) | COMPLETE — all gates green | Point-B 100%, ARCH-PASS, QA-PASS; 267 root tests green; harness 45 offline tests; cross-session recall live-proven |
+| 1C tech prep | COMPLETE | Runbook 36b6bfc; requireEnv hygiene 00d73fa; g3a benchmark DB db44573 (ad0 corpus migrated bit-identical to `llmems_bench`, full index parity incl. HNSW); naming-neutrality sweep + VALUES.md 8abca7a; docs follow-up 30b0c26 |
+| 1C benchmark (.10) | BLOCKED — owner action | gold-set-4.json transfer from generation machine pending (ask_question in TG topic 592) |
+| 1D (report + decision) | NOT STARTED | — |
+
+**Stand:** dedicated `llmems-litellm` proxy (port 15999, scoped key, $5 hard cap, $0.016 spent total incl. old key). Fully decoupled from shared-dev proxy.
+
+**q6l:** CLOSED — revert done, nothing of ours in foreign stack.
+
+**Owner-pending (secondary):** old dev-DB password rotation (a9r owner part; our scripts no longer depend on it). MemoryBench integration bead (external benchmarks, backlog).
+
 ## Strategic Decisions (committed)
 
 | Date | Decision | Status |
@@ -36,6 +52,7 @@ CEO product-memory. Updated: 2026-06-09.
 | 2026-06-09 | Open-core business model (MIT core, closed memory nucleus) | COMMITTED |
 | 2026-06-09 | Phase 1 plan: 1A (merge+publish) → 1B (test-stand integration) → 1C (long-memory benchmark) → 1D (decision) | COMMITTED |
 | 2026-06-09 | Production NOT touched in Phase 1 — all integration and measurement on test-stand only | COMMITTED |
+| 2026-06-11 | Session rotated after 1B+1C-prep completion; team teammates shut down (new session re-creates roster per .session-mode) | COMMITTED |
 
 ## Role in Ecosystem
 

@@ -4,49 +4,41 @@ Cold-restart pointer. Updated: 2026-06-11.
 
 ## Where We Ended
 
-**Phase 1B — COMPLETE, all gates green** (Point-B review 100%, independent arch review ARCH-PASS,
-QA evidence review PASS).
+1B closed all gates green; 1C tech prep 100% done; session rotated by owner approval 2026-06-11; team teammates were shut down (new session re-creates roster per .session-mode).
 
-- AM32 stand live: DB `llmems_stand` (Postgres + pgvector, manual 5-table schema), scoped LiteLLM
-  key `llmems-teststand` ($5 hard cap; spent $0.016 total).
-- `harness/` committed (`a22ab64` + `0a03a31`): standalone consumer of published
-  `@alexmakeev/llmems@0.4.0`, 45 offline tests, zero library code changes.
-- **Cross-session recall proven live**: seed → process restart → recall surfaces the run nonce;
-  dirty-DB stale-immunity proven (fresh run-scoped contextId + per-run nonce).
-- Latency p50 ~273 ms / max 896 ms vs 1500 ms budget — zero turns over.
-- Применения продукта вынесены за scope 1B/1C (owner decision 2026-06-11) — memory bound to the stand.
-- Epic llmems-3io children `.1`–`.9` DONE.
+Details:
+- 267 root tests green; harness 45 offline green.
+- Stand fully decoupled: dedicated `llmems-litellm` proxy port 15999, scoped key, $5 hard cap, $0.016 spent total.
+- ad0 corpus migrated bit-identical into `llmems_bench` DB with full index parity incl. HNSW (db44573).
+- Benchmark runbook written (36b6bfc); requireEnv hygiene done (00d73fa); naming-neutrality sweep + VALUES.md (8abca7a); docs follow-up (30b0c26).
+- q6l CLOSED (revert done, nothing of ours in foreign stack).
 
 ## Next Action
 
-**Phase 1C (`.10`) — long-memory benchmark prep.** Benchmark = existing pipeline pointed at the
-stand `llmems_bench` DB (frozen corpus — ad0 DONE) via required `POSTGRES_URL` (no harness
-coupling). Unblock in this order:
+Check TG topic 592 for owner's gold-set answer (pending ask_question: перенесу сам / инструкция для агента / отложить 1C).
 
-1. **llmems-wji** — write the benchmark runbook (assignable now).
-2. **llmems-a9r** — script part: make `POSTGRES_URL` required, fail-fast (assignable now);
-   dev-secret rotation needs the OWNER.
-3. **llmems-dnh** — frozen gold-set lives on the generation machine — **OWNER action required**.
+On gold-set arrival at a path: set `BENCHMARK_GOLDSET_FILE` and run `.10` cheap subset (`QUESTION_LIMIT`) per `docs/benchmark.md` against `llmems_bench` (`POSTGRES_URL`), sanity gate vs May baseline 0.524/0.668.
 
-Then `.10`: cheap subset first, full run only after explicit spending confirmation.
-Phase 1D (`.11`): report + decision; MUST include the G3 blind-spot note
-(`materials/plan-phase1b.md` §Carry to 1D — failure paths offline-proven only).
-
-Ops risk to not forget: **llmems-q6l (P1)** — shared-dev-proxy compose-stack local edits on AM32 die on redeploy.
+If no answer yet: idle wait, remind politely once a day max.
 
 ## Must Read
 
-- `CHARTER.md` (at repo root `/home/alexmak/llmems/CHARTER.md`) — goals, constraints, decision log
-- `docs/INDEX.md` — current state snapshot + full active bead list
-- `materials/plan-phase1b.md` — Phase 1B plan v2 FINAL (decisions D1–D16, gaps, carry-to-1D)
+- `docs/benchmark.md` — benchmark runbook (primary reference for .10 run)
+- `materials/plan-phase1b.md` — final plan (gitignored local); §Carry to 1D has failure-paths note
+- `docs/INDEX.md` — current state snapshot + active beads
+- bead `llmems-3io.10` + its blockers (dnh only)
+- `VALUES.md` — naming neutrality rule
+
+## Open Risks
+
+- gold-set sha never canonically recorded (provenance-only authenticity)
+- topic-closing probabilistic (lib bead for silent zero-topics path open)
+- failure paths offline-proven only (carry to 1D report)
+- old-DB password still unrotated (owner; our scripts no longer depend on it)
 
 ## State
 
 ```
-branch:  main
-commit:  Phase 1B closed at 0a03a31 + this recap commit
-tests:   242 root green + 45 harness offline green
-package: @alexmakeev/llmems@0.4.0 published
-spend:   $0.016 of $5.00 stand envelope
-tree:    clean after recap commit
+clean
+Last stable commit: 30b0c26
 ```
