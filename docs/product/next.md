@@ -15,7 +15,8 @@ Details:
 
 ## Next Action
 
-Active bead: llmems-3io.10 (blocked only by llmems-dnh — owner gold-set transfer)
+Active bead: llmems-3io.10
+Blocked only by llmems-dnh — owner gold-set transfer.
 
 Check TG topic 592 for owner's gold-set answer (pending ask_question: перенесу сам / инструкция для агента / отложить 1C).
 
