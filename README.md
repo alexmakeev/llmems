@@ -430,6 +430,10 @@ npm test           # run all tests with vitest (no external services required)
 npm run test:watch
 ```
 
+> Gotcha: if your shell exports `NODE_ENV=production`, npm omits devDependencies
+> (vitest/typescript/tsx disappear and `npm install -D <pkg>` prunes the rest).
+> Use `npm ci --include=dev` (or `npm install --include=dev`) in that environment.
+
 ## Build & Release
 
 ### Build

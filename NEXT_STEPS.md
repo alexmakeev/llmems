@@ -63,7 +63,7 @@ llmems/
 - GitHub remote: `git@github.com:alexmakeev/llmems.git`
 - Старый код (для справки): `~/llmems-old/main/`
 - Бот работает из: `~/llmems/main/` (Dokploy деплоит оттуда, НЕ ТРОГАТЬ)
-- PostgreSQL: `postgresql://llmems:pEDqwhPpyd3KYiy1rg5O0d8nGwTZxUvJ@localhost:5434/llmems`
+- PostgreSQL: `postgresql://llmems:<password>@localhost:5434/llmems` (пароль — из окружения; в репозитории не хранится, llmems-a9r)
 - Тесты: `npx vitest run` (139 тестов, все зелёные)
 
 ## Ключевые файлы
