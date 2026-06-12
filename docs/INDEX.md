@@ -1,6 +1,6 @@
 # llmems — Project Index / State Recap
 
-Последнее обновление: 2026-06-11
+Последнее обновление: 2026-06-12
 
 ## Current State
 
@@ -13,10 +13,9 @@ design → D12-rev fixture redesign, then 2/2). Latency p50 ~273 ms / max 896 ms
 (zero turns over). Spend: **$0.016 of $5**. Carry-to-1D blind spot (G3): failure paths
 (truncation/degrade/late-settle) proven offline only — see `materials/plan-phase1b.md` §Carry to 1D.
 
-**What's next: Phase 1C (`.10`)** — long-memory benchmark: existing pipeline pointed at the stand
-`llmems_bench` DB (frozen corpus; NOT the live `llmems_stand` smoke DB) via required `POSTGRES_URL`
-(no harness coupling). Blocked by: **llmems-dnh** (gold-set lives on
-the generation machine — OWNER action).
+**Phase 1C — COMPLETE (2026-06-12).** LongMemEval-S external benchmark (owner pivot): `recall_any@10 = 0.436` / `@5 = 0.338` on 470 Qs; 19,195 sessions persisted in `llmems_bench`. Per-type @10: assistant-facts 0.982, knowledge-update 0.597, multi-session 0.364, temporal-reasoning 0.315, user-facts 0.281, preferences 0.167. Spend: **$0.839 of $1.00 envelope**. Artifacts: `materials/bench-20260612-d6f21ea-longmemeval-*.json`; corpus persisted — re-runs nearly free.
+
+**What's next: Phase 1D (`.11`)** — analysis report + decision: scale / `cache_control` hint injection / graph-bet revival for weak categories (user-facts 0.281, preferences 0.167). Active bead: **llmems-3io.11**.
 
 **⚠ Применения продукта вынесены за scope Фазы 1B/1C (owner decision 2026-06-11):** no host-app
 middleware, no host-app instance on the stand. Integration into applications comes much later,
@@ -86,12 +85,11 @@ Run `bd list` for current status. Live epic:
 - **llmems-3io** — Phase 1 epic (v0.4.0 in main + memory-прототип on test stand + long-memory benchmark).
   - `.1`–`.6` — **DONE** (Phase 1A: context-factory, getCurrentContextParts, getLongTermContext, merge, publish)
   - `.7`–`.9` — **DONE** (Phase 1B: AM32 stand + `harness/` + cross-session smoke — all gates green)
-  - `.10` — Phase 1C: long-memory benchmark — existing pipeline pointed at the stand `llmems_bench` DB (frozen corpus, migrated by ad0) via required
-    `POSTGRES_URL`; no harness coupling (blocked by **llmems-dnh** only — owner gold-set transfer)
-  - `.11` — Phase 1D: report + decision (benchmark results → open-core boundary decision)
+  - `.10` — **DONE** (Phase 1C: LongMemEval-S — `recall_any@10 = 0.436`, 470 Qs, USD 0.839 of $1.00; corpus 19,195 sessions in `llmems_bench`)
+  - `.11` — **ACTIVE** — Phase 1D: analysis report + decision (scale / `cache_control` / graph-bet for weak categories)
 
-Blocking backlog (must resolve before `.10`): **llmems-dnh** only (gold-set for recall — OWNER action).
-Resolved/standalone: **llmems-wji** CLOSED (runbook done incl. §5.5 A/B procedure, commit b1aaa53); **llmems-a9r** OPEN standalone (script-side done, owner dev-secret rotation pending, not blocking `.10`).
+Session 2026-06-12 closures: **llmems-dnh** CLOSED (superseded — external pivot eliminated gold-set dependency); **llmems-wji** CLOSED (runbook incl. §5.5 A/B); **llmems-yn7** CLOSED (dataset verified + pinned); **llmems-mdg** CLOSED (LongMemEval-S adapter implemented); **llmems-o1d** CLOSED (benchmark.md §10 documented); **llmems-3io.10** CLOSED (Phase 1C complete).
+Standalone open: **llmems-a9r** (owner dev-secret rotation pending, not blocking 1D).
 
 New (2026-06-11, Phase 1B fallout):
 - **llmems-q6l** (P1) — ⚠ ops: persist the shared-dev-proxy compose-stack local edits on AM32 (litellm embeddings route + networks fix) into the stack repo — a Dokploy git-redeploy wipes them.
