@@ -38,4 +38,4 @@ Corpus persisted; re-experiments with changed parameters are cheap (~$0 seed top
 ## State
 
 clean
-Last stable commit: PENDING
+Last stable commit: be101b3
