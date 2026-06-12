@@ -8,7 +8,9 @@ Phase 1C complete via external benchmark pivot (owner directive 2026-06-11): hom
 
 ## Next Action
 
-Active bead: **llmems-3io.11** — Phase 1D analysis report + decision.
+Active bead: llmems-3io.11
+
+Phase 1D analysis report + decision.
 
 Core input: weak-category profile — user-facts (@10 0.281), preferences (0.167), temporal-reasoning (0.315), multi-session (0.364) all underperform vs assistant-facts (0.982) and knowledge-update (0.597). Key questions for the report:
 1. Root-cause: chunking strategy, session-boundary alignment, or recall-time context window?
