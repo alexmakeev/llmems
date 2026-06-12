@@ -28,12 +28,17 @@ export const EMBEDDING_USD_PER_1M_TOKENS = 0.02;
 export const CHARS_PER_TOKEN = 4;
 
 /**
- * Embedding input cap. text-embedding-3-small accepts ≤ 8191 tokens;
- * 28 000 chars ≈ 7 000 estimated tokens leaves safety margin for token-dense
- * text. Dataset incidence: only 6 of 19 195 unique sessions exceed this cap
- * (p99 length = 20 816 chars) — truncation is counted and reported, never silent.
+ * Embedding input cap. The embeddings API rejects inputs over 8 192 tokens.
+ *
+ * 26 000 is TOKEN-VERIFIED against the entire sha-pinned corpus (cl100k_base
+ * exhaustive scan, 2026-06-12): worst capped session = 7 652 tokens
+ * (sharegpt_xGoJZ6Z_0; 540-token margin), 7 of 19 195 unique sessions truncated.
+ * The previous chars/4-heuristic cap (28 000) failed live: that same session
+ * tokenized to 8 222 → API 400. The input domain is CLOSED (dataset sha256 is
+ * verified on every run), so the exhaustive scan is sound; the API error stays
+ * as the loud guard for any future re-pin. Re-run the scan before changing this.
  */
-export const MAX_EMBED_CHARS = 28_000;
+export const MAX_EMBED_CHARS = 26_000;
 
 /** The six question_type values present in LongMemEval-S (schema-drift guard). */
 export const QUESTION_TYPES = [

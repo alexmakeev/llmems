@@ -206,6 +206,14 @@ describe('provenance encode/decode', () => {
 // ── truncation + preflight ────────────────────────────────────────────────────
 
 describe('truncateForEmbedding', () => {
+  it('cap is FROZEN at the token-verified value (re-scan required to change)', () => {
+    // 26 000 is backed by an EXHAUSTIVE cl100k_base scan of the sha-pinned corpus
+    // (2026-06-12): worst session = 7 652 tokens ≤ 8 192 API limit, 7/19 195 truncated.
+    // 28 000 was proven WRONG live: sharegpt_xGoJZ6Z_0 → 8 222 tokens → API 400.
+    // Bumping this without re-running the token scan reintroduces that failure.
+    expect(MAX_EMBED_CHARS).toBe(26_000);
+  });
+
   it('passes short text through untouched', () => {
     expect(truncateForEmbedding('short')).toEqual({ text: 'short', truncated: false });
   });
