@@ -42,3 +42,37 @@ export function meanOf(values: number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
+
+/**
+ * recall_any@K — LongMemEval official retrieval metric (bead llmems-mdg).
+ *
+ * PROVENANCE: mirrors LongMemEval's print_retrieval_metrics.py: per question,
+ * the hit is binary — 1 if ANY expected session id appears in the top-K of the
+ * ranked list after deduplication to UNIQUE session ids (first-occurrence rank
+ * order preserved). DIFFERENT metric from the fractional recallAtK above
+ * (kept untouched for archived-baseline comparability) — do not mix them.
+ *
+ * Empty expected set throws loudly: abstention questions (dummy
+ * answer_session_ids) must be excluded BEFORE scoring, never silently scored.
+ */
+export function recallAnyAtK(
+  rankedSessionIds: string[],
+  expectedSessionIds: Set<string>,
+  k: number,
+): 0 | 1 {
+  if (expectedSessionIds.size === 0) {
+    throw new Error(
+      'recall_any@K: expected session set is empty — abstention questions must be ' +
+        'excluded from scoring (official denominator rule), not scored with dummy ids.',
+    );
+  }
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const id of rankedSessionIds) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      deduped.push(id);
+    }
+  }
+  return deduped.slice(0, k).some((id) => expectedSessionIds.has(id)) ? 1 : 0;
+}

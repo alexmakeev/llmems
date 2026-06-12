@@ -2,7 +2,7 @@
 // Formulas re-derived from the archived graph-era implementation (fcf history
 // eef63df) so .10 numbers stay comparable with docs/axis-experiment.md.
 import { describe, it, expect } from 'vitest';
-import { recallAtK, precisionAtK, meanOf } from '../../../scripts/benchmark/lib/recall-metrics.js';
+import { recallAtK, precisionAtK, meanOf, recallAnyAtK } from '../../../scripts/benchmark/lib/recall-metrics.js';
 
 describe('recallAtK', () => {
   it('= |topK ∩ expected| / |expected|', () => {
@@ -45,5 +45,34 @@ describe('meanOf', () => {
   it('averages values and returns 0 for empty input', () => {
     expect(meanOf([0.5, 1])).toBeCloseTo(0.75);
     expect(meanOf([])).toBe(0);
+  });
+});
+
+// recall_any@K (bead llmems-mdg) — LongMemEval official retrieval metric
+// (print_retrieval_metrics.py): binary per-question hit over UNIQUE sessions.
+// DIFFERENT metric from fractional recallAtK above — added alongside, no reuse.
+describe('recallAnyAtK', () => {
+  it('returns 1 when ANY expected session is within top-K, else 0', () => {
+    expect(recallAnyAtK(['a', 'b', 'c'], new Set(['c', 'z']), 3)).toBe(1);
+    expect(recallAnyAtK(['a', 'b', 'c'], new Set(['z']), 3)).toBe(0);
+  });
+
+  it('dedupes ranked ids to unique sessions BEFORE applying K', () => {
+    // raw top-3 = [a,a,b] misses c; deduped [a,b,c] hits at rank 3
+    expect(recallAnyAtK(['a', 'a', 'b', 'c'], new Set(['c']), 3)).toBe(1);
+    // dedup preserves first-occurrence rank order
+    expect(recallAnyAtK(['a', 'b', 'a', 'c'], new Set(['c']), 2)).toBe(0);
+  });
+
+  it('counts only the top-K window after dedup', () => {
+    expect(recallAnyAtK(['a', 'b', 'c'], new Set(['c']), 2)).toBe(0);
+  });
+
+  it('returns 0 for an empty ranked list', () => {
+    expect(recallAnyAtK([], new Set(['a']), 5)).toBe(0);
+  });
+
+  it('throws loudly on an empty expected set (abstention must never reach scoring)', () => {
+    expect(() => recallAnyAtK(['a'], new Set(), 5)).toThrowError(/expected/i);
   });
 });

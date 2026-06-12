@@ -21,6 +21,19 @@ export function requireEnv(
   return value;
 }
 
+/** Number variant (integer or fractional): same loud fail-fast (llmems-mdg budget). */
+export function requireEnvNumber(
+  name: string,
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = requireEnv(name, env);
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${name} must be a finite number, got "${raw}"`);
+  }
+  return value;
+}
+
 /** Integer variant: same loud fail-fast, plus strict integer validation. */
 export function requireEnvInt(
   name: string,

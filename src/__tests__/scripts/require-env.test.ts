@@ -2,7 +2,7 @@
 // The helper is the SINGLE fail-fast path for script env config: no hardcoded
 // defaults, no fallbacks — a missing variable throws loudly.
 import { describe, it, expect } from 'vitest';
-import { requireEnv, requireEnvInt } from '../../../scripts/lib/require-env.js';
+import { requireEnv, requireEnvInt, requireEnvNumber } from '../../../scripts/lib/require-env.js';
 
 describe('requireEnv (llmems-a9r fail-fast)', () => {
   it('returns the value when the variable is set', () => {
@@ -40,5 +40,25 @@ describe('requireEnvInt (llmems-g3a)', () => {
   it('throws on non-integer values, naming the variable', () => {
     expect(() => requireEnvInt('MEMSTORE_ID', { MEMSTORE_ID: 'four' })).toThrowError(/MEMSTORE_ID/);
     expect(() => requireEnvInt('MEMSTORE_ID', { MEMSTORE_ID: '4.5' })).toThrowError(/integer/i);
+  });
+});
+
+describe('requireEnvNumber (llmems-mdg spend budget)', () => {
+  it('parses integer and fractional values', () => {
+    expect(requireEnvNumber('LLMEMS_BENCH_BUDGET_USD', { LLMEMS_BENCH_BUDGET_USD: '1' })).toBe(1);
+    expect(requireEnvNumber('LLMEMS_BENCH_BUDGET_USD', { LLMEMS_BENCH_BUDGET_USD: '0.35' })).toBe(0.35);
+  });
+
+  it('throws when unset (inherits requireEnv loudness)', () => {
+    expect(() => requireEnvNumber('LLMEMS_BENCH_BUDGET_USD', {})).toThrowError(/LLMEMS_BENCH_BUDGET_USD/);
+  });
+
+  it('throws on non-numeric values, naming the variable', () => {
+    expect(() =>
+      requireEnvNumber('LLMEMS_BENCH_BUDGET_USD', { LLMEMS_BENCH_BUDGET_USD: 'one' }),
+    ).toThrowError(/LLMEMS_BENCH_BUDGET_USD/);
+    expect(() =>
+      requireEnvNumber('LLMEMS_BENCH_BUDGET_USD', { LLMEMS_BENCH_BUDGET_USD: 'NaN' }),
+    ).toThrowError(/number/i);
   });
 });
