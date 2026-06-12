@@ -47,8 +47,15 @@ export const QUESTION_TYPES = [
 
 /**
  * Category groupings accepted by the --category filter, in addition to the raw
- * question_type values. "info-extraction" = the official IE ability bucket
- * (the three single-session types; 150 non-abstention questions — stage 1).
+ * question_type values. "info-extraction" = the paper's IE ability bucket —
+ * a GROUPING, not a question_type (the file has no such type).
+ *
+ * Mapping verified against the pinned file (2026-06-12, binding contract):
+ *   single-session-user       70 total /  64 non-abs
+ *   single-session-assistant  56 total /  56 non-abs
+ *   single-session-preference 30 total /  30 non-abs
+ *   IE group                 156 total / 150 non-abs  ← stage-1 denominator 150 ✓
+ * (ssu+ssa alone would be 126/120 — does NOT reproduce the expected 150.)
  */
 export const CATEGORY_GROUPS: Record<string, readonly string[]> = {
   'info-extraction': [
