@@ -56,8 +56,14 @@ Design decisions (Codex COMMIT_REVIEW: APPROVE after 1 fix):
   (calibration ×0.842). Stage-2 top-up calibrated ≈ $0.539.
 - **Throughput**: seed ~50 sessions/s (batch 32 ≈ 0.65s embed+DB); recall ≈ 135 ms/question
   (embed + pgvector ANN over 7,012). Dataset load+sha ≈ 7s per CLI invocation.
-- **Stage-1 result** (denominator 150): recall_any@10 = 0.647, @5 = 0.507; per-type @10:
+- **Stage-1 result** (denominator 150, corpus 7,012): recall_any@10 = 0.647, @5 = 0.507; per-type @10:
   ssa 1.000, ssu 0.438, ssp 0.433. Archived: materials/bench-20260612-d6f21ea-longmemeval-ie-stage1.json.
+- **Stage-2 result** (denominator 470, corpus 19,195): recall_any@10 = 0.436, @5 = 0.338;
+  per-type @10: ssa 0.982, ku 0.597, ms 0.364, tr 0.315, ssu 0.281, ssp 0.167.
+  Spend window $0.5380 vs calibrated $0.539 (0.2% off — calibration validated); cumulative
+  key $0.8393. Recall latency scales with corpus: ~135 ms/q @7,012 → ~300 ms/q @19,195.
+  IE-type numbers shifted vs stage-1 (larger ANN corpus = different condition, by design).
+  Archived: materials/bench-20260612-d6f21ea-longmemeval-full-stage2{,-seed}.json.
 - tiktoken (cl100k_base) available via python3 on this host — use
   `disallowed_special=()` (corpus contains a literal `<|endoftext|>` string).
 - codex-interrupt.sh PreToolUse hook judges a TRUNCATED (~400 chars) command preview —
