@@ -8,6 +8,10 @@
 
 ## 1. Overview
 
+> **Two benchmark paths exist in this document:**
+> - **§10 — LongMemEval-S (current primary, Phase 1C):** external dataset, `recall_any@K`, no LLM judge. See §10.
+> - **§1–§9 — Internal gold-set path (legacy):** homemade gold-set pipeline (`benchmark-recall.ts`); superseded 2026-06-11. Sections below document this legacy path.
+
 The 1C benchmark measures long-term recall quality of `@alexmakeev/llmems` on the AM32 stand (dedicated `llmems_bench` DB with the frozen corpus)
 using **vectorRecall** (cosine ANN on mem embeddings).
 
@@ -379,6 +383,114 @@ The Phase 1D report (bead .11) will compare the live vectorRecall run against th
 numbers, with both caveats stated verbatim.
 
 For historical context on the projection/graph experiments, see `docs/axis-experiment.md`.
+
+---
+
+## 10. LongMemEval-S Benchmark Path (Phase 1C primary)
+
+**Bead:** llmems-3io.10 · **Script:** `scripts/benchmark/longmemeval.ts` · **Metric:** `recall_any@K`
+
+### 10.1 Dataset pin
+
+| | |
+|-|-|
+| **Source** | HuggingFace `xiaowu0162/longmemeval-cleaned`, file `longmemeval_s_cleaned.json` |
+| **URL (pinned)** | `https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json` |
+| **Local path** | `materials/benchmark-data/longmemeval_s.json` (gitignored; 265 MB) |
+| **SHA256** | `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442` |
+| **Variant** | Cleaned (2025-09). Original `xiaowu0162/longmemeval` is **deprecated** — its README says replaced; direct JSON returns 404 (xet format only). |
+| **Why cleaned** | Original contained filler sessions that leaked answers into non-evidence haystack slots, inflating recall. Schema is identical between variants. |
+
+File mismatch → loud abort. PIN enforced by `LONGMEMEVAL_S_SHA256` constant in `scripts/benchmark/lib/longmemeval-core.ts`.
+
+### 10.2 CLI: preflight → seed → recall
+
+**Heap:** 265 MB dataset — always set `export NODE_OPTIONS=--max-old-space-size=4096`.
+
+**Step 1 — Preflight (offline; no DB, no credentials, no embeddings):**
+```bash
+npx tsx scripts/benchmark/longmemeval.ts preflight [--category info-extraction]
+```
+Prints: unique session count, estimated tokens, projected USD. Use this to size `LLMEMS_BENCH_BUDGET_USD` before Step 2. No spending, no network.
+
+**Step 2 — Seed (ingest sessions into `llmems_bench`):**
+```bash
+export POSTGRES_URL=...               # llmems_bench DB on AM32 stand (NOT llmems_stand)
+export BENCHMARK_LLM_BASE_URL=...     # LiteLLM endpoint on AM32
+export BENCHMARK_LLM_API_KEY=...      # scoped $5 key
+export BENCHMARK_EMBEDDING_MODEL=...  # e.g. openai-embedding-small
+export LLMEMS_BENCH_BUDGET_USD=0.45   # stage-1 gate; raise to ≥0.65 for stage-2 top-up
+
+npx tsx scripts/benchmark/longmemeval.ts seed [--category info-extraction]
+```
+**Idempotent top-up:** computes the missing-session set against the store; embeds ONLY missing sessions. Budget gate fires on the MISSING projection before any embedding call. Safe to resume after interruption.
+
+**Step 3 — Recall scoring:**
+```bash
+# same env vars
+npx tsx scripts/benchmark/longmemeval.ts recall [--category info-extraction]
+```
+Aborts with `INGESTION SANITY FAILED` if evidence sessions are absent from the store. Do not interpret near-zero recall as "weak memory" until sanity passes.
+
+**`--category` values (binding contract, commit bac999e):**
+
+| Argument | Types included | Unique sessions | Non-abs questions |
+|----------|---------------|-----------------|-------------------|
+| `info-extraction` | `single-session-user` (64) + `single-session-assistant` (56) + `single-session-preference` (30) | 7 012 | **150** |
+| *(omitted)* | Full dataset (all 6 types) | 19 195 | **470** |
+
+**`LLMEMS_BENCH_BUDGET_USD`:** required env var — fail-fast if unset or ≤ 0. Used by both `seed` and `recall`: `seed` gates the MISSING-session projection before session embeddings; `recall` gates question-embedding spend before scoring. Both abort before any embedding call if the projection exceeds the budget.
+
+### 10.3 Metric: recall_any@K
+
+Mirrors official `print_retrieval_metrics.py` semantics:
+
+1. For each scored question: retrieve K sessions from the store.
+2. De-duplicate retrieved session IDs to unique before applying cutoff K.
+3. **Binary hit:** question is recalled if ≥ 1 of the top-K sessions is in `answer_session_ids`.
+4. Aggregate: `recall_any@K = hits / denominator`.
+
+**Denominator:** 470 (full) / 150 (IE). The 30 abstention questions (suffix `_abs` in `question_id` — **not** a separate `question_type`; span 4 types) are excluded — no ground-truth session location exists.
+
+**Reported:** primary **`recall_any@10`**; also record **`recall_any@5`**.
+
+**Memstore context ID:** `longmemeval-s` inside the `llmems_bench` DB.
+
+> **Internal May 2026 baseline (R@5 0.524, R@10 0.668) is context only, NOT a gate.** It used the internal gold-set on a different corpus with a different metric (fractional recall over expectedMemIds). LongMemEval-S absolute numbers will differ — this is expected.
+
+### 10.4 Stage gates
+
+**Implementation-sanity check (pre-gate):** before applying quality thresholds, verify:
+- All `answer_session_ids` for scored questions are present in the store.
+- Session count matches expected unique-session count for the selection.
+
+Near-zero recall + failed sanity = broken ingestion (bug, not weak memory). Fix first.
+
+**Stage-1 gate** (info-extraction; denominator 150):
+
+| `recall_any@10` | Action |
+|-----------------|--------|
+| < 0.30 | **Weak-stop.** Report to owner; do NOT proceed to stage 2 without explicit approval. |
+| 0.30 – 0.49 | **Grey zone.** Report to owner with diagnostics before authorizing stage 2. |
+| ≥ 0.50 | Proceed to stage 2 (full dataset). |
+
+> Stage 2 (full 470 Qs) requires new owner confirmation with actual stage-1 spend in hand. No automatic escalation.
+
+### 10.5 Spend
+
+**Preflight projections** (offline-verified, commit 39567e2):
+
+| Stage | Sessions embedded | Scored Qs | Projected USD |
+|-------|-------------------|-----------|---------------|
+| Stage 1 — `info-extraction` | 7 012 unique | 150 | **~$0.358** |
+| Stage 2 — top-up to full | ~12 183 additional | 470 total | **~$0.640 additional** |
+| Full ladder total | 19 195 unique | 470 | **~$0.998** |
+
+All within the $5 hard cap. Actual spend: check LiteLLM spend logs on AM32 stand after each run.
+
+**Budget gate:** `LLMEMS_BENCH_BUDGET_USD=0.45` for stage 1 (preflight projects $0.358, gate set with 25% headroom); raise to `≥0.65` for stage-2 top-up (~$0.640).
+
+**Results archive:** `sandboxes/longmemeval-{stage}-{date}.json` (gitignored).
 
 ---
 
