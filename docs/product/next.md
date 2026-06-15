@@ -34,4 +34,4 @@ llmems-3io.11 (Phase 1D) — baseline portion done; at planning, consider closin
 - vision.md (Phase-2 structure/graph), CHARTER.md
 
 ## State
-clean — main at COMMIT_HASH_PLACEHOLDER; baseline track closed.
+clean — main at 90dd40d; baseline track closed.
