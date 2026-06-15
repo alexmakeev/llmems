@@ -1,7 +1,47 @@
 # Developer Role Memory — llmems (docs/codebase/)
 
 Long-term implementation findings/decisions. Updated at task boundaries.
-Last update: 2026-06-12 (llmems-mdg + stage-1 run of llmems-3io.10).
+Last update: 2026-06-15 (recall_any@{10,20,30} re-score, llmems-3io.11 / Phase 1D step 1, commit 4226b6e).
+
+## recall_any@{10,20,30} deeper-K re-score (llmems-3io.11, commit 4226b6e, 2026-06-15)
+
+Ladder #1 from discovery: `fetchK=30` was ALREADY retrieved at runtime, but the artifact
+persisted only top-10 (`topSessions.slice(0,10)`) + hitAt5/hitAt10 → @20/@30 were NOT
+offline-recomputable. Fix (in `lib/longmemeval-core.ts`): added recall_any@{20,30} ALONGSIDE
+@5/@10 via the SAME `recallAnyAtK` fn (kept @5/@10 untouched for archived-baseline
+comparability), and persist `topSessions.slice(0, fetchK)` (depth 30) — @{10,20,30} now
+offline-recomputable from the artifact (closes discovery §4.4 blind-spot). Extended
+QuestionScore + aggregate + byCategory; CLI prints @20/@30. Codex COMMIT_REVIEW APPROVE.
+
+Results (full set, 470 Qs, 19,195-mem llmems_bench corpus, ~$0.0002 question-embeds only):
+- **@5/@10/@20/@30 = 0.338 / 0.436 / 0.566 / 0.632.** @5/@10 reproduce archived stage-2 EXACTLY.
+- Per-type @10→@30: ssa 0.982→1.000, ku 0.597→0.750, ms 0.364→0.562, tr 0.315→0.638 (biggest
+  abs lift), ssu 0.281→0.422, ssp 0.167→0.367.
+- **Near/far split of the 265 @10-misses** (hits@10=205, hits@30=297; recall_any monotone in K
+  so @10→@30 gain = recovered misses): **92 near (~35%) / 173 far (~65%).** Far-miss DOMINATES —
+  for every weak category the MAJORITY of misses stay outside top-30. So wider K is a partial,
+  diminishing lever; the real fix is STRUCTURAL (retrieval granularity / embedding model), not a
+  wider cutoff. ssu/ssp dilution-bound even at @30 (~58–63% of their Qs miss at depth 30).
+  (Earlier draft said "evidence mostly in top-30" — OVERSTATED; corrected after architect
+  arithmetic-check. Direction right, magnitude was off.)
+
+Run mechanics (NOT in repo — secrets live on the host):
+- Benchmark env sourced from `~/llmems-stand/.env` (the SMOKE teststand env). Its var names DIFFER
+  from what `longmemeval.ts` expects: map `LITELLM_BASE_URL`→`BENCHMARK_LLM_BASE_URL` (append `/v1`),
+  `LITELLM_API_KEY`→`BENCHMARK_LLM_API_KEY`, `LLMEMS_EMBEDDINGS_MODEL`(=`openai-embedding-small`)→
+  `BENCHMARK_EMBEDDING_MODEL`.
+- Its `POSTGRES_URL` points at `llmems_stand` (smoke DB, 3 mems). The benchmark needs `llmems_bench`
+  (frozen corpus, memstore id=5, 19,195 mems) on the SAME PG server → swap the db name:
+  `POSTGRES_URL=${POSTGRES_URL/llmems_stand/llmems_bench}`. (docs §2.2 forbids llmems_stand.)
+- litellm proxy reachable at `127.0.0.1:15999` from this dev host. Recall gates on question chars
+  ONLY (~$0.0002) — set `LLMEMS_BENCH_BUDGET_USD` low (0.02) as a guard; recall never re-seeds.
+- Cost ground-truth = litellm key-spend delta: GET `${LITELLM_BASE_URL}/key/info` → `info.spend`
+  ($0.8393→$0.83943 across this run; $5 hard cap).
+- Artifacts (gitignored materials/): `recall-at-k-20260615.md` (table + interpretation),
+  `bench-20260615-d6f21ea-longmemeval-full-recall-at-k.json` (depth-30 rankings + @{5,10,20,30}).
+- codex-interrupt.sh PreToolUse hook reliably FALSE-POSITIVES on inline python with `lambda` and on
+  any multi-line/long command (judges a ~400-char truncated preview). Avoid `lambda`, keep commands
+  short; for read-only checks of your own freshly-written file the block is spurious.
 
 ## LongMemEval-S adapter (llmems-mdg, commit 39567e2)
 
