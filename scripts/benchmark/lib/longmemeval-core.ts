@@ -449,20 +449,30 @@ export interface QuestionScore {
   question_id: string;
   question_type: string;
   expected: string[];
-  /** Deduped unique-session ranking actually used for scoring. */
+  /**
+   * Deduped unique-session ranking actually used for scoring, kept to the full
+   * fetchK depth (30) so @{10,20,30} stay recomputable offline from the artifact.
+   */
   topSessions: string[];
   hitAt5: 0 | 1;
   hitAt10: 0 | 1;
+  hitAt20: 0 | 1;
+  hitAt30: 0 | 1;
 }
 
 export interface RecallScoringResult {
   aggregate: {
     scored: number;
     abstentionExcluded: number;
-    /** Primary metric (predeclared): recall_any@10; @5 also recorded. */
+    /** Primary metric (predeclared): recall_any@10; @5/@20/@30 also recorded. */
     recallAnyAt5: number;
     recallAnyAt10: number;
-    byCategory: Record<string, { scored: number; recallAnyAt5: number; recallAnyAt10: number }>;
+    recallAnyAt20: number;
+    recallAnyAt30: number;
+    byCategory: Record<
+      string,
+      { scored: number; recallAnyAt5: number; recallAnyAt10: number; recallAnyAt20: number; recallAnyAt30: number }
+    >;
   };
   sanity: {
     storedSessions: number;
@@ -565,9 +575,11 @@ export async function runRecallScoring(
       question_id: q.question_id,
       question_type: q.question_type,
       expected: q.answer_session_ids,
-      topSessions: topSessions.slice(0, 10),
+      topSessions: topSessions.slice(0, fetchK),
       hitAt5: recallAnyAtK(rankedSessionIds, expected, 5),
       hitAt10: recallAnyAtK(rankedSessionIds, expected, 10),
+      hitAt20: recallAnyAtK(rankedSessionIds, expected, 20),
+      hitAt30: recallAnyAtK(rankedSessionIds, expected, 30),
     });
   }
 
@@ -577,14 +589,20 @@ export async function runRecallScoring(
       scored: 0,
       recallAnyAt5: 0,
       recallAnyAt10: 0,
+      recallAnyAt20: 0,
+      recallAnyAt30: 0,
     });
     bucket.scored += 1;
     bucket.recallAnyAt5 += score.hitAt5;
     bucket.recallAnyAt10 += score.hitAt10;
+    bucket.recallAnyAt20 += score.hitAt20;
+    bucket.recallAnyAt30 += score.hitAt30;
   }
   for (const bucket of Object.values(byCategory)) {
     bucket.recallAnyAt5 /= bucket.scored;
     bucket.recallAnyAt10 /= bucket.scored;
+    bucket.recallAnyAt20 /= bucket.scored;
+    bucket.recallAnyAt30 /= bucket.scored;
   }
 
   const scored = perQuestion.length;
@@ -594,6 +612,8 @@ export async function runRecallScoring(
       abstentionExcluded: selected.length - scored,
       recallAnyAt5: scored === 0 ? 0 : perQuestion.reduce((s, x) => s + x.hitAt5, 0) / scored,
       recallAnyAt10: scored === 0 ? 0 : perQuestion.reduce((s, x) => s + x.hitAt10, 0) / scored,
+      recallAnyAt20: scored === 0 ? 0 : perQuestion.reduce((s, x) => s + x.hitAt20, 0) / scored,
+      recallAnyAt30: scored === 0 ? 0 : perQuestion.reduce((s, x) => s + x.hitAt30, 0) / scored,
       byCategory,
     },
     sanity: {

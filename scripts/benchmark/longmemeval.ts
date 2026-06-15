@@ -280,9 +280,12 @@ async function cmdRecall(questions: LmeQuestion[], args: CliArgs): Promise<numbe
     console.log(`LongMemEval-S retrieval-only (${a.scored} scored, ${a.abstentionExcluded} abstention excluded):`);
     console.log(`  recall_any@10 = ${a.recallAnyAt10.toFixed(3)}  (primary)`);
     console.log(`  recall_any@5  = ${a.recallAnyAt5.toFixed(3)}`);
+    console.log(`  recall_any@20 = ${a.recallAnyAt20.toFixed(3)}`);
+    console.log(`  recall_any@30 = ${a.recallAnyAt30.toFixed(3)}`);
     for (const [type, bucket] of Object.entries(a.byCategory)) {
       console.log(
-        `    ${type}: @10=${bucket.recallAnyAt10.toFixed(3)} @5=${bucket.recallAnyAt5.toFixed(3)} (n=${bucket.scored})`,
+        `    ${type}: @10=${bucket.recallAnyAt10.toFixed(3)} @20=${bucket.recallAnyAt20.toFixed(3)} ` +
+          `@30=${bucket.recallAnyAt30.toFixed(3)} @5=${bucket.recallAnyAt5.toFixed(3)} (n=${bucket.scored})`,
       );
     }
     console.log(

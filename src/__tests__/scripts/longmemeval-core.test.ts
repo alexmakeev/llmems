@@ -416,7 +416,7 @@ function recallPorts(opts: {
 }
 
 describe('runRecallScoring', () => {
-  it('computes recall_any@5/@10 with abstention excluded from the denominator', async () => {
+  it('computes recall_any@5/@10/@20/@30 with abstention excluded from the denominator', async () => {
     const ports = recallPorts({
       ranked: {
         q1: ['s1', 's2'], // hit@5
@@ -432,8 +432,40 @@ describe('runRecallScoring', () => {
     expect(result.aggregate.abstentionExcluded).toBe(1);
     expect(result.aggregate.recallAnyAt5).toBeCloseTo(3 / 5);
     expect(result.aggregate.recallAnyAt10).toBeCloseTo(4 / 5);
+    // deeper K is monotone non-decreasing; the longest ranked list here is 6 ids
+    // (< 20), so @20 and @30 equal @10 — every hit already lands within top-10.
+    expect(result.aggregate.recallAnyAt20).toBeCloseTo(4 / 5);
+    expect(result.aggregate.recallAnyAt30).toBeCloseTo(4 / 5);
     // abstention question is never embedded or searched
     expect(ports.embedQuestion).toHaveBeenCalledTimes(5);
+  });
+
+  it('recall_any@K is monotone non-decreasing in K: a hit beyond top-10 lifts @20/@30 only', async () => {
+    const ports = recallPorts({
+      ranked: {
+        // s1 (q1 evidence) at rank 15 → miss@10, hit@20 and hit@30
+        q1: [
+          'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'd10',
+          'd11', 'd12', 'd13', 'd14', 's1',
+        ],
+        q2: ['s3'],
+        q3: ['s6'], // s6 ∉ q3 expected (s4,s5) → miss at every K
+        q5: ['s7'],
+        q6: ['s8'],
+      },
+    });
+    const result = await runRecallScoring({ questions: FIXTURE, budgetUsd: 1, ports });
+    const q1 = result.perQuestion.find((x) => x.question_id === 'q1')!;
+    expect(q1.hitAt5).toBe(0);
+    expect(q1.hitAt10).toBe(0);
+    expect(q1.hitAt20).toBe(1);
+    expect(q1.hitAt30).toBe(1);
+    // q2,q3(miss),q5,q6 unaffected by K → @10 = 3/5, @20 = @30 = 4/5
+    expect(result.aggregate.recallAnyAt10).toBeCloseTo(3 / 5);
+    expect(result.aggregate.recallAnyAt20).toBeCloseTo(4 / 5);
+    expect(result.aggregate.recallAnyAt30).toBeCloseTo(4 / 5);
+    // full-depth ranking is persisted (not truncated to 10) for offline re-score
+    expect(q1.topSessions.length).toBe(15);
   });
 
   it('dedupes retrieved sessions to UNIQUE ids before applying K', async () => {
