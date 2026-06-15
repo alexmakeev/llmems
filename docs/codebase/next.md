@@ -1,3 +1,5 @@
+NEW TRACK (owner pivot 2026-06-15): context-formation pipeline development (feed dataset dialogues through the real ContextFactory/recall pipeline; observe+improve context orientation + per-moment mem-list formation). See docs/product/next.md ROTATION HANDOFF. Baseline track closed.
+
 # Developer — Where We Ended / What's Next
 
 Cold-restart pointer (developer role). Updated: 2026-06-15 (B1 done, commit a36d9ef).

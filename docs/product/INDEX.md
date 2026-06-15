@@ -37,7 +37,8 @@ CEO product-memory. Updated: 2026-06-15.
 | 1C benchmark (.10) | COMPLETE | LongMemEval-S ran end-to-end; recall_any@5=0.338 / @10=0.436; bead 3io.10 closed; USD 0.839 of $1.00 envelope spent |
 | 1D step 1 (recall@{5,10,20,30} + analysis) | COMPLETE — verified + committed | recall_any@{10,20,30} = 0.436/0.566/0.632; far-miss-dominant finding (92 near / 173 far); H1 dilution confirmed ssu/ssp; commits 4226b6e + 5a3eb9a, Codex APPROVE, 363 tests green |
 | 1D B1 (round-level granularity probe) | COMPLETE — committed | a36d9ef/5881d2c; user-facts +46% (robust, n=64); preferences −31% (soft/n=30-bound, unprovable); IE 0.647→0.707; takeaway: mechanical granularity type-dependent, NOT commodity win; semantic pipeline = lever; moat thesis strengthened |
-| 1D next step | AWAITING owner choice | multi-res union probe ~$0.30 (recommended) vs #6/H5 full semantic pipeline $5–15; open-core boundary deferred until #6/H5 |
+| 1D next step | CLOSED — baseline ACCEPTED | owner approved closure 2026-06-15; multi-res union probe + other cheap proxies DROPPED; baseline accepted as-is |
+| NEW TRACK | ACTIVE — Discovery-first | context-formation pipeline development: feed real LongMemEval dialogues through ContextFactory/recall pipeline, observe+improve context orientation + per-moment mem-list formation; architect Discovery first |
 
 **Stand:** dedicated `llmems-litellm` proxy (port 15999, scoped key, $5 hard cap, ~$1.14 spent total incl. Phase 1C+1D benchmark runs). Fully decoupled from shared-dev proxy.
 

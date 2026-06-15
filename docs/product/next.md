@@ -1,37 +1,37 @@
-# Where We Ended / What's Next
+# next.md — ROTATION HANDOFF → NEW TRACK (product / CEO)
 
-Cold-restart pointer. Updated: 2026-06-15.
+## ROTATION HANDOFF (2026-06-15) — READ FIRST
+Owner approved rotation to start a NEW track with fresh context (CEO + team). The baseline-benchmarking track is CLOSED.
 
-## Where We Ended
+## What's DONE (closed, committed)
+- Phase 1D baseline benchmarking complete + committed: 4226b6e (re-score depth-30), a36d9ef (round-level granularity arm), recaps 86d110c/fd61215, dev memory 5881d2c. All Codex COMMIT_REVIEW APPROVE. Tests 330 green.
+- Findings: whole-session recall floor @10=0.436 (@20=0.566, @30=0.632). Far-miss dominant (~65% of @10-misses outside top-30 → structural, not ranking-window). B1 round-level probe: helps concentrated facts (user-facts +46%, robust n=64); NO proven help for diffuse types (preferences regression statistically soft, n=30-bound). Takeaway: mechanical granularity is TYPE-DEPENDENT, not a commodity win; the SEMANTIC pipeline is the real lever. Moat thesis strengthened (commodity = basic granularity+retrieval; closed = LLM semantic pipeline).
+- Baseline ACCEPTED by owner as-is. NO more cheap proxy runs (multi-resolution etc. dropped per owner 2026-06-15).
 
-Phase 1D advancing. Step 1 (whole-session re-score @{10,20,30}) done earlier. B1 (round-level granularity PROBE) DONE + committed.
-- Commits: a36d9ef (round-level granularity harness arm: splitRounds/runRoundSeed/CLI + underfetch guard), 5881d2c (dev next.md). Both Codex COMMIT_REVIEW APPROVE. Tests 330 green. B1 spend ~$0.30 (under $0.40 cap).
-- B1 RESULT (same-corpus, clean @10 comparison; round-level = mechanical turn-pairs, NO LLM summarization):
-  · user-facts (ssu): 0.438 → 0.641 (+46%) — ROBUST (n=64). Round granularity fixes dilution for concentrated facts.
-  · preferences (ssp): 0.433 → 0.300 (−31%) — SOFT/NOISE: a 4-question shift, n=30 noise band; only 30 preference Qs in the whole benchmark → UNPROVABLE by scaling here. Do NOT build a thesis on this regression.
-  · overall IE: 0.647 → 0.707 (+0.06).
-- TAKEAWAY (robust): mechanical granularity is TYPE-DEPENDENT — helps concentrated facts, not diffuse signals. NOT a commodity win. The semantic LLM pipeline (segmentation + summarization) is the real lever for diffuse types.
-- MOAT thesis STRENGTHENED: commoditizable mechanical splitting is insufficient alone → value = the closed semantic nucleus. Sharper open-core line: basic granularity+retrieval = MIT commodity; LLM semantic pipeline = closed moat. (Still gate finalization on #6/H5.)
+## NEW TRACK (owner directive 2026-06-15) — START HERE
+Pivot to the REAL built system: the mem-based CONTEXT-FORMATION algorithm (the atomic-mem pipeline — ContextFactory / BackgroundIndexer / LLMSummarizer / recall loop, NOT the benchmark proxies).
+Goal: make it possible to feed REAL dataset dialogues (LongMemEval) through the ACTUAL pipeline, then OBSERVE + IMPROVE:
+  (a) how well the system orients in context, and
+  (b) how well it forms the list of available mems at each moment of the dialogue.
+This is about live-pipeline BEHAVIOR on real dialogues + iterative improvement — NOT recall@K in a vacuum.
+
+## Next Action (post-rotation)
+1. DISCOVERY (architect) on the current context-formation algorithm: how ContextFactory builds the per-turn mem list today (segmentation → summarization → recall loop → assembly), what observability exists, edge cases, integration points, and how to feed dataset dialogues through the real pipeline. Output ≤500-line discovery doc.
+2. Then ONE Deep Question to owner on specifics: which dialogues/subset; what "well-oriented in context" + "good mem-list" mean operationally (success criteria); what observability he wants.
+3. Plan (beads) → implement observability + improvements → verify. Start on a SMALL subset of dialogues for cheap iteration.
+NOTE: running the full pipeline over the whole corpus is LLM-heavy (~$5–15, the #6/H5 run) — any such spend needs an explicit owner budget envelope.
+
+## Team
+Recreate the team FRESH (roster: developer, qa-tester, architect, researcher). The pre-rotation teammates carried heavy baseline context (developer ~251k) — do NOT reuse them. If the old "llmems" team/teammates linger, recreate fresh.
 
 ## Active bead
-
-llmems-3io.11 (in_progress).
-
-## Next Action
-
-AWAITING owner choice on next experiment (live TG conversation, topic 592):
-1. Multi-resolution union probe (~$0.30, no LLM) — keep BOTH session + round indexes, retrieve union; cheapest type-aware test.
-2. #6/H5 full built-pipeline run ($5–15, needs explicit owner budget envelope) — on-design test: does LLM semantic consolidation rescue diffuse types where mechanical splitting failed.
-Recommended: cheap step 1 first (incremental validation). On owner go → rotate developer fresh (idle, ready) then assign.
-Open-core boundary decision (A) still DEFERRED — gate on #6/H5.
+llmems-3io.11 (Phase 1D) — baseline portion done; at planning, consider closing it and opening a new bead/epic for the context-formation track.
 
 ## Must Read
-
-- `materials/report-phase1d.md` (§9 = B1 read + interpretation)
-- `materials/B1-results-20260615.md` (B1 full table)
-- `materials/recall-at-k-20260615.md` (step-1 numbers + env recipe)
-- `materials/discovery-phase1d.md` (discovery + cost ladder §4.2)
+- materials/report-phase1d.md (full Phase 1D analysis incl. B1 §9)
+- materials/discovery-phase1d.md (pipeline layers; what the baseline bypasses)
+- docs/codebase/INDEX.md (developer role memory: pipeline mechanics, env recipe)
+- vision.md (Phase-2 structure/graph), CHARTER.md
 
 ## State
-
-clean — main at 5881d2c; team alive (developer/architect/qa-tester/researcher idle). Caveats: same-corpus whole-session @20/@30 unavailable (overwritten); ssp permanently n=30-bound.
+clean — main at COMMIT_HASH_PLACEHOLDER; baseline track closed.
