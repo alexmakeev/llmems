@@ -204,15 +204,15 @@ export function sessionText(turns: LmeTurn[]): string {
  * are verified content-identical (yn7 confirmed 0 mismatches; a mismatch here
  * means a corrupted dataset → loud abort).
  */
-export function collectUniqueSessions(questions: LmeQuestion[]): Map<string, string> {
-  const unique = new Map<string, string>();
+export function collectUniqueSessionTurns(questions: LmeQuestion[]): Map<string, LmeTurn[]> {
+  const unique = new Map<string, LmeTurn[]>();
   for (const q of questions) {
     q.haystack_session_ids.forEach((sessionId, i) => {
-      const text = sessionText(q.haystack_sessions[i]!);
+      const turns = q.haystack_sessions[i]!;
       const existing = unique.get(sessionId);
       if (existing === undefined) {
-        unique.set(sessionId, text);
-      } else if (existing !== text) {
+        unique.set(sessionId, turns);
+      } else if (sessionText(existing) !== sessionText(turns)) {
         throw new Error(
           `Session id "${sessionId}" carries DIFFERENT content across questions — ` +
             'dataset corrupted, session-level dedup would be unsound. Aborting.',
@@ -221,6 +221,38 @@ export function collectUniqueSessions(questions: LmeQuestion[]): Map<string, str
     });
   }
   return unique;
+}
+
+export function collectUniqueSessions(questions: LmeQuestion[]): Map<string, string> {
+  const unique = new Map<string, string>();
+  for (const [sessionId, turns] of collectUniqueSessionTurns(questions)) {
+    unique.set(sessionId, sessionText(turns));
+  }
+  return unique;
+}
+
+/**
+ * Split one session's turns into ROUNDS for round-level granularity seeding.
+ * A new round begins at each `user` turn; the round absorbs the following
+ * non-user turns up to (not including) the next user turn. Leading non-user
+ * turns (a session opening with an assistant turn) form the first round.
+ *
+ * Universal — assumes NOTHING about strict user/assistant alternation: every
+ * turn lands in exactly one round, original order preserved, no turn dropped or
+ * duplicated. `concat` of all rounds === the input turns.
+ */
+export function splitRounds(turns: LmeTurn[]): LmeTurn[][] {
+  const rounds: LmeTurn[][] = [];
+  let current: LmeTurn[] = [];
+  for (const turn of turns) {
+    if (turn.role === 'user' && current.length > 0) {
+      rounds.push(current);
+      current = [];
+    }
+    current.push(turn);
+  }
+  if (current.length > 0) rounds.push(current);
+  return rounds;
 }
 
 // ── Session-id provenance (on every ingested mem) ────────────────────────────
@@ -274,39 +306,63 @@ function projectUsd(tokens: number): number {
   return (tokens / 1_000_000) * EMBEDDING_USD_PER_1M_TOKENS;
 }
 
+/** Seeding granularity: one mem per whole session, or one mem per round. */
+export type Granularity = 'session' | 'round';
+
 export interface Preflight {
   category: string | null;
+  granularity: Granularity;
   questionsSelected: number;
   /** Non-abstention questions = the recall_any@K denominator. */
   questionsScored: number;
   uniqueSessions: number;
-  truncatedSessions: number;
+  /** Embedding inputs = sessions ('session') or rounds ('round'). */
+  embedUnits: number;
+  /** Embedding inputs truncated at MAX_EMBED_CHARS. */
+  truncatedUnits: number;
   sessionChars: number;
-  /** Sessions (truncated lengths) + scored question texts. */
+  /** Embed inputs (truncated lengths) + scored question texts. */
   estimatedTokens: number;
   projectedUsd: number;
 }
 
+/** Embed-input texts for a granularity: whole sessions, or rounds within them. */
+function embedTexts(
+  sessions: Map<string, LmeTurn[]>,
+  granularity: Granularity,
+): string[] {
+  if (granularity === 'session') {
+    return [...sessions.values()].map((turns) => sessionText(turns));
+  }
+  const texts: string[] = [];
+  for (const turns of sessions.values()) {
+    for (const round of splitRounds(turns)) texts.push(sessionText(round));
+  }
+  return texts;
+}
+
 /**
- * Spend preflight: project unique-session count, tokens and USD for a category
- * selection. Pure computation — callers gate spending via assertBudget BEFORE
- * any embedding call.
+ * Spend preflight: project embed-unit count, tokens and USD for a category
+ * selection at the given granularity. Pure computation — callers gate spending
+ * via assertBudget BEFORE any embedding call.
  */
 export function computePreflight(
   questions: LmeQuestion[],
   category: string | undefined,
+  granularity: Granularity = 'session',
 ): Preflight {
   const selected = filterByCategory(questions, category);
   const scored = selected.filter((q) => !isAbstention(q));
-  const unique = collectUniqueSessions(selected);
+  const sessions = collectUniqueSessionTurns(selected);
+  const texts = embedTexts(sessions, granularity);
 
   let sessionChars = 0;
   let cappedChars = 0;
-  let truncatedSessions = 0;
-  for (const text of unique.values()) {
+  let truncatedUnits = 0;
+  for (const text of texts) {
     sessionChars += text.length;
     cappedChars += Math.min(text.length, MAX_EMBED_CHARS);
-    if (text.length > MAX_EMBED_CHARS) truncatedSessions += 1;
+    if (text.length > MAX_EMBED_CHARS) truncatedUnits += 1;
   }
   const questionChars = scored.reduce((sum, q) => sum + q.question.length, 0);
   const estimatedTokens =
@@ -314,10 +370,12 @@ export function computePreflight(
 
   return {
     category: category ?? null,
+    granularity,
     questionsSelected: selected.length,
     questionsScored: scored.length,
-    uniqueSessions: unique.size,
-    truncatedSessions,
+    uniqueSessions: sessions.size,
+    embedUnits: texts.length,
+    truncatedUnits,
     sessionChars,
     estimatedTokens,
     projectedUsd: projectUsd(estimatedTokens),
@@ -429,6 +487,104 @@ export async function runSeed(opts: RunSeedOptions): Promise<SeedReport> {
     alreadyPresent: unique.size - missing.length,
     embedded: missing.length,
     truncated,
+    estimatedTokens,
+    projectedUsd,
+  };
+}
+
+// ── Round-level seed (granularity experiment, bead llmems-3io.11 / B1) ────────
+
+export interface RoundSeedReport {
+  category: string | null;
+  uniqueSessions: number;
+  roundsEmbedded: number;
+  truncatedRounds: number;
+  estimatedTokens: number;
+  projectedUsd: number;
+}
+
+export interface RunRoundSeedOptions {
+  questions: LmeQuestion[];
+  category?: string;
+  budgetUsd: number;
+  ports: SeedPorts;
+  /** Rounds per embeddings request / store transaction. */
+  batchSize?: number;
+  log?: (message: string) => void;
+}
+
+/**
+ * Round-level seed: ingest each unique session of the selection as MULTIPLE mems
+ * — one per round (see splitRounds) — each carrying the SAME session-id
+ * provenance marker, so recall_any@K (which dedups retrieved mems to unique
+ * session ids) needs no change. Embedding is computed from the raw round text
+ * (marker excluded), capped at MAX_EMBED_CHARS.
+ *
+ * No idempotent resume: provenance carries only the session id (not a round
+ * index), so a partial re-seed cannot be detected per round. The target memstore
+ * MUST be empty (a fresh contextId) — a non-empty store aborts loudly. The
+ * budget gate runs on the full round set BEFORE the first embedding call.
+ */
+export async function runRoundSeed(opts: RunRoundSeedOptions): Promise<RoundSeedReport> {
+  const { questions, category, budgetUsd, ports } = opts;
+  const batchSize = opts.batchSize ?? 64;
+  const log = opts.log ?? (() => undefined);
+
+  const existing = await ports.existingSessionIds();
+  if (existing.size > 0) {
+    throw new Error(
+      `ROUND SEED requires an EMPTY target memstore (fresh contextId) — found ${existing.size} ` +
+        'sessions already present. Round-level granularity has no idempotent resume (provenance ' +
+        'carries only the session id, not a round index). Use a new contextId or truncate the store.',
+    );
+  }
+
+  const selected = filterByCategory(questions, category);
+  const sessions = collectUniqueSessionTurns(selected);
+
+  const units: { sessionId: string; embedText: string; fullText: string }[] = [];
+  let truncatedRounds = 0;
+  let totalChars = 0;
+  for (const [sessionId, turns] of sessions) {
+    for (const round of splitRounds(turns)) {
+      const fullText = sessionText(round);
+      const capped = truncateForEmbedding(fullText);
+      if (capped.truncated) truncatedRounds += 1;
+      totalChars += capped.text.length;
+      units.push({ sessionId, embedText: capped.text, fullText });
+    }
+  }
+
+  const estimatedTokens = estimateTokensForChars(totalChars);
+  const projectedUsd = projectUsd(estimatedTokens);
+  assertBudget(projectedUsd, budgetUsd);
+  log(
+    `round seed: ${sessions.size} unique sessions → ${units.length} rounds to embed ` +
+      `(~${estimatedTokens} tokens, ~$${projectedUsd.toFixed(4)})`,
+  );
+
+  for (let offset = 0; offset < units.length; offset += batchSize) {
+    const batch = units.slice(offset, offset + batchSize);
+    const vectors = await ports.embedBatch(batch.map((u) => u.embedText));
+    if (vectors.length !== batch.length) {
+      throw new Error(
+        `Embedding batch size mismatch: sent ${batch.length} inputs, got ${vectors.length} vectors`,
+      );
+    }
+    await ports.storeMems(
+      batch.map((u, i) => ({
+        summary: encodeProvenance(u.sessionId, u.fullText),
+        embedding: vectors[i]!,
+      })),
+    );
+    log(`round seed: stored ${Math.min(offset + batchSize, units.length)}/${units.length}`);
+  }
+
+  return {
+    category: category ?? null,
+    uniqueSessions: sessions.size,
+    roundsEmbedded: units.length,
+    truncatedRounds,
     estimatedTokens,
     projectedUsd,
   };
@@ -555,7 +711,12 @@ export async function runRecallScoring(
   assertBudget(projectUsd(estimateTokensForChars(questionChars)), budgetUsd);
 
   // ── Score ───────────────────────────────────────────────────────────────────
+  // Deepest K scored — fetchK must surface at least this many UNIQUE sessions or
+  // the deep-K metrics are silently truncated (acute with round granularity:
+  // many mems share a session, so raw fetchK rows dedup to fewer sessions).
+  const MAX_SCORED_K = 30;
   const perQuestion: QuestionScore[] = [];
+  const underfetched: string[] = [];
   for (const q of scoredQuestions) {
     const vector = await ports.embedQuestion(q.question);
     const mems = await ports.searchMems(vector, fetchK);
@@ -571,16 +732,35 @@ export async function runRecallScoring(
       }
     }
 
+    // Underfetch guard: the ANN LIMIT was saturated (mems.length === fetchK) yet
+    // the rows dedup to fewer than MAX_SCORED_K unique sessions — more unique
+    // sessions may exist beyond the cap, so @20/@30 could be FALSE misses.
+    // (Not saturated ⇒ the store returned everything in range ⇒ metric exact.)
+    if (mems.length >= fetchK && topSessions.length < MAX_SCORED_K) {
+      underfetched.push(q.question_id);
+    }
+
     perQuestion.push({
       question_id: q.question_id,
       question_type: q.question_type,
       expected: q.answer_session_ids,
-      topSessions: topSessions.slice(0, fetchK),
+      // Persist exactly the depth the metrics need — bounded regardless of fetchK.
+      topSessions: topSessions.slice(0, MAX_SCORED_K),
       hitAt5: recallAnyAtK(rankedSessionIds, expected, 5),
       hitAt10: recallAnyAtK(rankedSessionIds, expected, 10),
       hitAt20: recallAnyAtK(rankedSessionIds, expected, 20),
       hitAt30: recallAnyAtK(rankedSessionIds, expected, 30),
     });
+  }
+
+  if (underfetched.length > 0) {
+    throw new Error(
+      `RECALL FETCH-K TOO SMALL — ${underfetched.length} question(s) saturated the ANN limit ` +
+        `(fetchK=${fetchK}) but yielded fewer than ${MAX_SCORED_K} unique sessions after dedup, so ` +
+        `recall_any@20/@30 would be falsely truncated (e.g. ${underfetched.slice(0, 5).join(', ')}` +
+        `${underfetched.length > 5 ? ', …' : ''}). Raise --fetch-k (round granularity packs many ` +
+        'mems per session — use a generous depth, e.g. 500).',
+    );
   }
 
   const byCategory: RecallScoringResult['aggregate']['byCategory'] = {};

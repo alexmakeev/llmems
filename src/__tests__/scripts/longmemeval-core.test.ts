@@ -16,6 +16,9 @@ import {
   computePreflight,
   assertBudget,
   runSeed,
+  runRoundSeed,
+  splitRounds,
+  collectUniqueSessionTurns,
   runRecallScoring,
   CATEGORY_GROUPS,
   MAX_EMBED_CHARS,
@@ -232,7 +235,9 @@ describe('computePreflight', () => {
     expect(p.questionsSelected).toBe(6);
     expect(p.questionsScored).toBe(5); // q4_abs excluded from scoring
     expect(p.uniqueSessions).toBe(8);
-    expect(p.truncatedSessions).toBe(0);
+    expect(p.truncatedUnits).toBe(0);
+    expect(p.granularity).toBe('session'); // default
+    expect(p.embedUnits).toBe(8); // session granularity → one embed input per session
 
     const sessionChars = [...collectUniqueSessions(FIXTURE).values()].reduce((a, t) => a + t.length, 0);
     const questionChars = FIXTURE.filter((x) => !isAbstention(x)).reduce((a, x) => a + x.question.length, 0);
@@ -257,7 +262,7 @@ describe('computePreflight', () => {
       { role: 'user', content: 'y'.repeat(MAX_EMBED_CHARS + 1000) },
     ];
     const p = computePreflight(longFixture, undefined);
-    expect(p.truncatedSessions).toBe(1);
+    expect(p.truncatedUnits).toBe(1);
     // tokens are estimated on the TRUNCATED text (that is what gets embedded)
     const unique = collectUniqueSessions(longFixture);
     const cappedChars = [...unique.values()].reduce(
@@ -393,6 +398,127 @@ describe('runSeed', () => {
   });
 });
 
+// ── round-level granularity (splitRounds + runRoundSeed) ──────────────────────
+
+describe('splitRounds', () => {
+  const t = (role: string, content = role) => ({ role, content });
+
+  it('splits strictly-alternating turns into user+assistant rounds', () => {
+    const r = splitRounds([t('user', 'u1'), t('assistant', 'a1'), t('user', 'u2'), t('assistant', 'a2')]);
+    expect(r.map((round) => round.map((x) => x.content))).toEqual([['u1', 'a1'], ['u2', 'a2']]);
+  });
+
+  it('opens a fresh round at each user turn, absorbing following non-user turns', () => {
+    const r = splitRounds([t('user'), t('assistant'), t('assistant'), t('user')]);
+    expect(r.map((round) => round.map((x) => x.role))).toEqual([
+      ['user', 'assistant', 'assistant'],
+      ['user'],
+    ]);
+  });
+
+  it('puts leading non-user turns (assistant-first session) in their own round', () => {
+    const r = splitRounds([t('assistant'), t('user'), t('assistant')]);
+    expect(r.map((round) => round.map((x) => x.role))).toEqual([['assistant'], ['user', 'assistant']]);
+  });
+
+  it('handles consecutive user turns as separate rounds; loses no turn', () => {
+    const turnsIn = [t('user', 'u1'), t('user', 'u2'), t('assistant', 'a1')];
+    const r = splitRounds(turnsIn);
+    expect(r).toEqual([[t('user', 'u1')], [t('user', 'u2'), t('assistant', 'a1')]]);
+    // concat of rounds === input (universal, no drop/dup)
+    expect(r.flat()).toEqual(turnsIn);
+  });
+
+  it('returns no rounds for an empty session', () => {
+    expect(splitRounds([])).toEqual([]);
+  });
+});
+
+describe('computePreflight (round granularity)', () => {
+  it('counts rounds (not sessions) as embed inputs and projects their tokens', () => {
+    const session = computePreflight(FIXTURE, undefined, 'session');
+    const round = computePreflight(FIXTURE, undefined, 'round');
+    expect(round.granularity).toBe('round');
+    expect(round.uniqueSessions).toBe(session.uniqueSessions); // same sessions
+    // every fixture session is a single user-turn → exactly one round each here
+    const sessions = collectUniqueSessionTurns(FIXTURE);
+    const totalRounds = [...sessions.values()].reduce((a, ts) => a + splitRounds(ts).length, 0);
+    expect(round.embedUnits).toBe(totalRounds);
+    expect(round.embedUnits).toBeGreaterThanOrEqual(session.embedUnits);
+  });
+});
+
+describe('runRoundSeed', () => {
+  it('stores one mem per round, all carrying the session-id provenance marker', async () => {
+    const ports = seedPorts();
+    const report = await runRoundSeed({ questions: FIXTURE, budgetUsd: 1, ports });
+
+    const sessions = collectUniqueSessionTurns(FIXTURE);
+    const expectedRounds = [...sessions.values()].reduce((a, ts) => a + splitRounds(ts).length, 0);
+    expect(report.uniqueSessions).toBe(sessions.size);
+    expect(report.roundsEmbedded).toBe(expectedRounds);
+    expect(ports.stored).toHaveLength(expectedRounds);
+    // every stored mem decodes to a real session id (provenance preserved)
+    const decoded = new Set(ports.stored.map((m) => decodeProvenance(m.summary)));
+    expect(decoded).toEqual(new Set(sessions.keys()));
+  });
+
+  it('emits MULTIPLE rounds for a multi-round session, all sharing the session-id marker', async () => {
+    // A session with 3 user-started rounds (NOT one-round-per-session like the
+    // shared FIXTURE) — exercises round mode genuinely diverging from session mode.
+    const multiRound: LmeQuestion = {
+      question_id: 'qmr',
+      question_type: 'single-session-user',
+      question: 'multi round question?',
+      question_date: '2023/05/30 (Tue) 23:40',
+      answer: 'a',
+      answer_session_ids: ['smr'],
+      haystack_dates: ['2023/05/20 (Sat) 02:21'],
+      haystack_session_ids: ['smr'],
+      haystack_sessions: [
+        [
+          { role: 'user', content: 'r1 user' },
+          { role: 'assistant', content: 'r1 asst' },
+          { role: 'user', content: 'r2 user' },
+          { role: 'assistant', content: 'r2 asst' },
+          { role: 'user', content: 'r3 user' },
+        ],
+      ],
+    };
+    const ports = seedPorts();
+    const report = await runRoundSeed({ questions: [multiRound], budgetUsd: 1, ports });
+
+    expect(report.uniqueSessions).toBe(1);
+    expect(report.roundsEmbedded).toBe(3); // 3 user-started rounds
+    expect(report.roundsEmbedded).toBeGreaterThan(report.uniqueSessions); // ≠ session mode
+    expect(ports.stored).toHaveLength(3);
+    // every round mem decodes to the SAME session id (provenance repeated per round)
+    expect(ports.stored.map((m) => decodeProvenance(m.summary))).toEqual(['smr', 'smr', 'smr']);
+
+    // round preflight agrees: embed inputs = rounds (3) > sessions (1)
+    const p = computePreflight([multiRound], undefined, 'round');
+    expect(p.embedUnits).toBe(3);
+    expect(p.uniqueSessions).toBe(1);
+    expect(p.embedUnits).toBeGreaterThan(p.uniqueSessions);
+  });
+
+  it('aborts loudly on a non-empty target store (no idempotent round resume)', async () => {
+    const ports = seedPorts(['s1']); // store already has a session
+    await expect(runRoundSeed({ questions: FIXTURE, budgetUsd: 1, ports })).rejects.toThrowError(
+      /EMPTY target memstore|fresh contextId/i,
+    );
+    expect(ports.embedBatch).not.toHaveBeenCalled(); // no spend on a dirty store
+  });
+
+  it('NEVER embeds when the projected round cost exceeds the budget (spend gate)', async () => {
+    const ports = seedPorts();
+    await expect(runRoundSeed({ questions: FIXTURE, budgetUsd: 1e-12, ports })).rejects.toThrowError(
+      /budget/i,
+    );
+    expect(ports.embedBatch).not.toHaveBeenCalled();
+  });
+});
+
 // ── recall scoring ────────────────────────────────────────────────────────────
 
 function recallPorts(opts: {
@@ -494,6 +620,28 @@ describe('runRecallScoring', () => {
     expect(result.aggregate.byCategory['single-session-assistant']!.recallAnyAt5).toBe(0);
     expect(result.aggregate.byCategory['multi-session']!.scored).toBe(1);
     expect(result.aggregate.byCategory['knowledge-update']!.recallAnyAt5).toBe(0);
+  });
+
+  it('SANITY: aborts when fetchK is saturated but dedups to <30 unique sessions (round underfetch)', async () => {
+    // 30 ranked rows (= default fetchK) collapsing to 2 unique sessions — exactly
+    // the round-granularity hazard: more unique sessions may exist beyond the cap,
+    // so @20/@30 would be falsely truncated. Must abort with a raise-fetch-k hint.
+    const ranked30 = Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? 's1' : 's2'));
+    const ports = recallPorts({
+      ranked: { q1: ranked30, q2: ['s3'], q3: ['s4'], q5: ['s7'], q6: ['s8'] },
+    });
+    await expect(runRecallScoring({ questions: FIXTURE, budgetUsd: 1, ports })).rejects.toThrowError(
+      /FETCH-K TOO SMALL|fetch-k/i,
+    );
+  });
+
+  it('does NOT flag underfetch when the ANN limit is not saturated (fewer rows than fetchK)', async () => {
+    // short ranked lists (< fetchK) ⇒ store returned everything in range ⇒ metric exact, no abort
+    const ports = recallPorts({
+      ranked: { q1: ['s1'], q2: ['s3'], q3: ['s4'], q5: ['s7'], q6: ['s8'] },
+    });
+    const result = await runRecallScoring({ questions: FIXTURE, budgetUsd: 1, ports });
+    expect(result.aggregate.scored).toBe(5);
   });
 
   it('SANITY: aborts loudly when evidence sessions are missing from the store (broken ingestion ≠ weak recall)', async () => {

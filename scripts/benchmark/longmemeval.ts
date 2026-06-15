@@ -32,11 +32,13 @@ import {
   computePreflight,
   assertBudget,
   runSeed,
+  runRoundSeed,
   runRecallScoring,
   decodeProvenance,
   LONGMEMEVAL_S_SHA256,
   DEFAULT_DATASET_PATH,
   type LmeQuestion,
+  type Granularity,
 } from './lib/longmemeval-core.js';
 
 const EXPECTED_DIMENSIONS = 1536;
@@ -53,13 +55,18 @@ interface CliArgs {
   command: 'preflight' | 'seed' | 'recall';
   category: string | undefined;
   datasetPath: string;
+  contextId: string;
+  granularity: Granularity;
+  /** ANN fetch depth before session dedup; undefined = runRecallScoring default (30). */
+  fetchK: number | undefined;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const [command] = argv;
   if (command !== 'preflight' && command !== 'seed' && command !== 'recall') {
     throw new Error(
-      `Usage: longmemeval.ts <preflight|seed|recall> [--category <c>] [--dataset <path>] — got "${command ?? ''}"`,
+      `Usage: longmemeval.ts <preflight|seed|recall> [--category <c>] [--dataset <path>] ` +
+        `[--context-id <id>] [--granularity session|round] — got "${command ?? ''}"`,
     );
   }
   const readFlag = (flag: string): string | undefined => {
@@ -71,10 +78,25 @@ function parseArgs(argv: string[]): CliArgs {
     }
     return value;
   };
+  const granularityRaw = readFlag('--granularity') ?? 'session';
+  if (granularityRaw !== 'session' && granularityRaw !== 'round') {
+    throw new Error(`--granularity must be "session" or "round", got "${granularityRaw}"`);
+  }
+  const fetchKRaw = readFlag('--fetch-k');
+  let fetchK: number | undefined;
+  if (fetchKRaw !== undefined) {
+    fetchK = Number(fetchKRaw);
+    if (!Number.isInteger(fetchK) || fetchK < 30) {
+      throw new Error(`--fetch-k must be an integer ≥ 30 (need ≥30 unique sessions to score @30), got "${fetchKRaw}"`);
+    }
+  }
   return {
     command,
     category: readFlag('--category'),
     datasetPath: readFlag('--dataset') ?? DEFAULT_DATASET_PATH,
+    contextId: readFlag('--context-id') ?? LONGMEMEVAL_CONTEXT_ID,
+    granularity: granularityRaw,
+    fetchK,
   };
 }
 
@@ -111,7 +133,7 @@ function suffix(category: string | undefined): string {
 
 // ── Shared store collaborators (seed + recall) ───────────────────────────────
 
-function buildStoreCollaborators(postgresUrl: string) {
+function buildStoreCollaborators(postgresUrl: string, contextId: string) {
   const pool = new Pool({ connectionString: postgresUrl });
   const store = new PostgresMemStore(postgresUrl);
 
@@ -119,7 +141,7 @@ function buildStoreCollaborators(postgresUrl: string) {
   const storedSessionIds = async (): Promise<Set<string>> => {
     const memstore = await pool.query<{ id: number }>(
       'SELECT id FROM memstores WHERE name = $1',
-      [LONGMEMEVAL_CONTEXT_ID],
+      [contextId],
     );
     const memstoreId = memstore.rows[0]?.id;
     if (memstoreId === undefined) return new Set();
@@ -166,13 +188,14 @@ function buildEmbedder() {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 function cmdPreflight(questions: LmeQuestion[], args: CliArgs): number {
-  const preflight = computePreflight(questions, args.category);
-  console.log(`LongMemEval-S spend preflight (category: ${preflight.category ?? 'ALL'})`);
+  const preflight = computePreflight(questions, args.category, args.granularity);
+  console.log(`LongMemEval-S spend preflight (category: ${preflight.category ?? 'ALL'}, granularity: ${preflight.granularity})`);
   console.log(`  questions selected: ${preflight.questionsSelected}`);
   console.log(`  questions scored (non-abstention denominator): ${preflight.questionsScored}`);
-  console.log(`  unique sessions to embed: ${preflight.uniqueSessions}`);
-  console.log(`  sessions truncated at embed time: ${preflight.truncatedSessions}`);
-  console.log(`  estimated tokens (sessions + questions): ${preflight.estimatedTokens}`);
+  console.log(`  unique sessions: ${preflight.uniqueSessions}`);
+  console.log(`  embedding inputs (${preflight.granularity}): ${preflight.embedUnits}`);
+  console.log(`  embed inputs truncated at cap: ${preflight.truncatedUnits}`);
+  console.log(`  estimated tokens (embed inputs + questions): ${preflight.estimatedTokens}`);
   console.log(`  projected cost: $${preflight.projectedUsd.toFixed(4)}`);
 
   const budgetRaw = process.env['LLMEMS_BENCH_BUDGET_USD'];
@@ -184,7 +207,7 @@ function cmdPreflight(questions: LmeQuestion[], args: CliArgs): number {
     console.log('  budget gate: not evaluated (LLMEMS_BENCH_BUDGET_USD unset) — seed WILL require it');
   }
 
-  const file = writeReport(`longmemeval-preflight-${suffix(args.category)}`, preflight);
+  const file = writeReport(`longmemeval-preflight-${args.granularity}-${suffix(args.category)}`, preflight);
   console.log(`Preflight written: ${file}`);
   return 0;
 }
@@ -193,53 +216,73 @@ async function cmdSeed(questions: LmeQuestion[], args: CliArgs): Promise<number>
   const postgresUrl = requireEnv('POSTGRES_URL');
   const budgetUsd = requireEnvNumber('LLMEMS_BENCH_BUDGET_USD');
   const embedder = buildEmbedder();
-  const collab = buildStoreCollaborators(postgresUrl);
+  const collab = buildStoreCollaborators(postgresUrl, args.contextId);
+
+  const storeMems = async (mems: { summary: string; embedding: number[] }[]): Promise<void> => {
+    await collab.store.applyBackgroundResult(
+      mems.map((m) => ({ summary: m.summary, chunkIds: [], embeddings: { full: m.embedding } })),
+      [],
+      null,
+      args.contextId,
+    );
+  };
+  const categoryOpt = args.category !== undefined ? { category: args.category } : {};
 
   try {
-    const report = await runSeed({
-      questions,
-      ...(args.category !== undefined ? { category: args.category } : {}),
-      budgetUsd,
-      batchSize: SEED_BATCH_SIZE,
-      log: (message) => console.log(message),
-      ports: {
-        embedBatch: embedder.embedBatch,
-        existingSessionIds: collab.storedSessionIds,
-        storeMems: async (mems) => {
-          await collab.store.applyBackgroundResult(
-            mems.map((m) => ({
-              summary: m.summary,
-              chunkIds: [],
-              embeddings: { full: m.embedding },
-            })),
-            [],
-            null,
-            LONGMEMEVAL_CONTEXT_ID,
-          );
-        },
-      },
-    });
+    let report: Record<string, unknown>;
+    let summary: string;
 
-    // Implementation-sanity: ingested-session count vs expected, post-write.
-    const storedAfter = await collab.storedSessionIds();
-    if (storedAfter.size < report.alreadyPresent + report.embedded) {
-      throw new Error(
-        `SEED SANITY FAILED: store has ${storedAfter.size} sessions, expected at least ` +
-          `${report.alreadyPresent + report.embedded} — ingestion lost rows.`,
-      );
+    if (args.granularity === 'round') {
+      const r = await runRoundSeed({
+        questions,
+        ...categoryOpt,
+        budgetUsd,
+        batchSize: SEED_BATCH_SIZE,
+        log: (m) => console.log(m),
+        ports: { embedBatch: embedder.embedBatch, existingSessionIds: collab.storedSessionIds, storeMems },
+      });
+      // Sanity: every selected session must be present (≥1 round) after a round seed.
+      const storedAfter = await collab.storedSessionIds();
+      if (storedAfter.size !== r.uniqueSessions) {
+        throw new Error(
+          `ROUND SEED SANITY FAILED: store holds ${storedAfter.size} distinct sessions, ` +
+            `expected ${r.uniqueSessions} — ingestion lost or duplicated sessions.`,
+        );
+      }
+      report = { storedSessionsAfterSeed: storedAfter.size, ...r };
+      summary =
+        `round seed done: ${r.roundsEmbedded} rounds across ${r.uniqueSessions} sessions ` +
+        `(${r.truncatedRounds} truncated), store now holds ${storedAfter.size} sessions`;
+    } else {
+      const r = await runSeed({
+        questions,
+        ...categoryOpt,
+        budgetUsd,
+        batchSize: SEED_BATCH_SIZE,
+        log: (m) => console.log(m),
+        ports: { embedBatch: embedder.embedBatch, existingSessionIds: collab.storedSessionIds, storeMems },
+      });
+      const storedAfter = await collab.storedSessionIds();
+      if (storedAfter.size < r.alreadyPresent + r.embedded) {
+        throw new Error(
+          `SEED SANITY FAILED: store has ${storedAfter.size} sessions, expected at least ` +
+            `${r.alreadyPresent + r.embedded} — ingestion lost rows.`,
+        );
+      }
+      report = { storedSessionsAfterSeed: storedAfter.size, ...r };
+      summary =
+        `seed done: ${r.embedded} embedded (+${r.alreadyPresent} already present, ` +
+        `${r.truncated} truncated), store now holds ${storedAfter.size} sessions`;
     }
 
-    const file = writeReport(`longmemeval-seed-${suffix(args.category)}`, {
-      contextId: LONGMEMEVAL_CONTEXT_ID,
+    const file = writeReport(`longmemeval-seed-${args.granularity}-${suffix(args.category)}`, {
+      contextId: args.contextId,
+      granularity: args.granularity,
       datasetSha256: LONGMEMEVAL_S_SHA256,
       embedding: { model: embedder.model, baseURL: embedder.baseURL, dimensions: EXPECTED_DIMENSIONS },
-      storedSessionsAfterSeed: storedAfter.size,
       ...report,
     });
-    console.log(
-      `seed done: ${report.embedded} embedded (+${report.alreadyPresent} already present, ` +
-        `${report.truncated} truncated), store now holds ${storedAfter.size} sessions`,
-    );
+    console.log(summary);
     console.log(`Seed report written: ${file}`);
     return 0;
   } finally {
@@ -251,24 +294,27 @@ async function cmdRecall(questions: LmeQuestion[], args: CliArgs): Promise<numbe
   const postgresUrl = requireEnv('POSTGRES_URL');
   const budgetUsd = requireEnvNumber('LLMEMS_BENCH_BUDGET_USD');
   const embedder = buildEmbedder();
-  const collab = buildStoreCollaborators(postgresUrl);
+  const collab = buildStoreCollaborators(postgresUrl, args.contextId);
 
   try {
     const result = await runRecallScoring({
       questions,
       ...(args.category !== undefined ? { category: args.category } : {}),
+      ...(args.fetchK !== undefined ? { fetchK: args.fetchK } : {}),
       budgetUsd,
       log: (message) => console.log(message),
       ports: {
         embedQuestion: async (text) => (await embedder.embedBatch([text]))[0]!,
         searchMems: (vector, fetchK) =>
-          collab.store.searchMemsByVector(vector, fetchK, LONGMEMEVAL_CONTEXT_ID),
+          collab.store.searchMemsByVector(vector, fetchK, args.contextId),
         storedSessionIds: collab.storedSessionIds,
       },
     });
 
-    const file = writeReport(`longmemeval-recall-${suffix(args.category)}`, {
-      contextId: LONGMEMEVAL_CONTEXT_ID,
+    const file = writeReport(`longmemeval-recall-${args.granularity}-${suffix(args.category)}`, {
+      contextId: args.contextId,
+      granularity: args.granularity,
+      fetchK: args.fetchK ?? 30,
       datasetSha256: LONGMEMEVAL_S_SHA256,
       embedding: { model: embedder.model, baseURL: embedder.baseURL, dimensions: EXPECTED_DIMENSIONS },
       category: args.category ?? null,
