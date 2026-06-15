@@ -1,43 +1,36 @@
 # Where We Ended / What's Next
 
-Cold-restart pointer. Updated: 2026-06-12.
+Cold-restart pointer. Updated: 2026-06-15.
 
 ## Where We Ended
 
-Phase 1C complete via external benchmark pivot (owner directive 2026-06-11): homemade gold-set path superseded by LongMemEval-S (ICLR 2025, HuggingFace cleaned variant, 500 Qs / 470 scored). Both stages ran clean end-to-end. Final scores: `recall_any@10 = 0.436` / `recall_any@5 = 0.338` (470 Qs, 19,195 sessions). Per-type @10: assistant-facts 0.982, knowledge-update 0.597, multi-session 0.364, temporal-reasoning 0.315, user-facts 0.281, preferences 0.167. All sanity gates PASS (ingestion count, evidence sessions, sha256, budget gate). Spend: USD 0.839 of 1.00 owner envelope; corpus persisted in `llmems_bench` — re-runs nearly free. Two setup-repo bug-reports filed (048/049). Beads closed this session: dnh (superseded), wji, yn7, mdg, o1d, 3io.10.
+Phase 1D step 1 DONE, verified, committed.
+- `recall_any@{5,10,20,30}` = 0.338 / 0.436 / 0.566 / 0.632 (LongMemEval-S, 470 scored Qs, 19195 sessions; naive whole-session-embedding FLOOR — not the atomic-mem pipeline).
+- Key finding: FAR-MISS dominant. Extending K 10→30 recovers only ~35% of @10-misses (92 near / 173 far). Majority of weak-category misses (53–80%) sit OUTSIDE top-30 → structural representation problem (granularity/embedding), NOT a ranking-window problem.
+- Worst categories: user-facts (ssu) & preferences (ssp) — ~58–63% lost even at @30 → H1 whole-session dilution confirmed.
+- Commits on main: 4226b6e (re-score + depth-30 persistence), 5a3eb9a (developer role-memory). Both Codex COMMIT_REVIEW APPROVE. qa: 363 tests green, numbers reproduced independently.
 
 ## Next Action
 
 Active bead: llmems-3io.11
 
-Phase 1D analysis report + decision.
+AWAITING owner budget decision (TG topic 592) on the granularity A/B test (memory sliced per-round):
+- B1 ~$0.29 (recommended) — two worst categories, sharpest H1 test.
+- B2 ~$0.55–0.65 — all categories.
+- hold — stop at current result.
 
-Core input: weak-category profile — user-facts (@10 0.281), preferences (0.167), temporal-reasoning (0.315), multi-session (0.364) all underperform vs assistant-facts (0.982) and knowledge-update (0.597). Key questions for the report:
-1. Root-cause: chunking strategy, session-boundary alignment, or recall-time context window?
-2. Scaling: is current vectorRecall sufficient at higher K, or does retrieval need structural changes?
-3. `cache_control` hint injection feasibility — `getCurrentContextParts()` boundary already exposed (stable backbone / dynamic mems / raw tail).
-4. Graph-bet revival — does the weak temporal/multi-session profile justify revisiting `experiment/axis-projections`?
-5. Open-core boundary decision (gate for Phase 2 planning).
+Declared-envelope remainder ~$0.16 < needed → owner must authorize a NEW envelope.
+On B1/B2 → ROTATE developer (rotation-ready, was ~143k; its pointer docs/codebase/next.md) then assign round-level re-seed (fresh contextId) + re-score. On hold → close Phase 1D milestone.
 
-Corpus persisted; re-experiments with changed parameters are cheap (~$0 seed top-up, <$0.05 recall re-score).
+Open-core boundary decision (A) DEFERRED — coupled to the granularity result (do NOT finalize before B1).
 
 ## Must Read
 
-- `docs/INDEX.md` — current state + active beads
-- Bead `llmems-3io.10` close reason + comments (stage gates, per-type breakdown, spend log)
-- `materials/research-2026-06-11-external-memory-benchmarks.md` — Phase 1C re-scope rationale
-- `docs/benchmark.md` §10 — LongMemEval-S runbook (CLI, metric, stage gates, spend)
-- `materials/bench-20260612-d6f21ea-longmemeval-*.json` — stage-1 and stage-2 result artifacts
-- `docs/vision.md` — north-star (context for open-core boundary decision)
-
-## Open Risks
-
-- Weak categories (user-facts 0.281, preferences 0.167) — root cause not yet isolated; may require chunking or retrieval changes.
-- Failure paths (truncation/degrade/late-settle) still offline-proven only — carry-to-1D (G3).
-- Old-DB password still unrotated (owner; llmems scripts fail-fast on missing `POSTGRES_URL`, no silent fallback).
-- Setup-repo issues 048/049 filed but not yet resolved.
+- `materials/report-phase1d.md` — full analysis + both owner decisions framed
+- `materials/recall-at-k-20260615.md` — numbers + env recipe + corrected magnitude
+- `materials/discovery-phase1d.md` — Phase 1D discovery; cost ladder §4.2
 
 ## State
 
 clean
-Last stable commit: be101b3
+Last stable commit: 5a3eb9a (main); team alive (developer rotation-ready/idle, architect+qa-tester+researcher idle). Pre-existing untracked scratch unrelated.

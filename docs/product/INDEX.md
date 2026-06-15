@@ -1,6 +1,6 @@
 # llmems — Product Memory
 
-CEO product-memory. Updated: 2026-06-11.
+CEO product-memory. Updated: 2026-06-15.
 
 ## Product Definition
 
@@ -34,10 +34,11 @@ CEO product-memory. Updated: 2026-06-11.
 | 1A (merge + publish) | COMPLETE | v0.4.0 published |
 | 1B (test-stand integration) | COMPLETE — all gates green | Point-B 100%, ARCH-PASS, QA-PASS; 267 root tests green; harness 45 offline tests; cross-session recall live-proven |
 | 1C tech prep | COMPLETE | Runbook 36b6bfc; requireEnv hygiene 00d73fa; g3a benchmark DB db44573 (ad0 corpus migrated bit-identical to `llmems_bench`, full index parity incl. HNSW); naming-neutrality sweep + VALUES.md 8abca7a; docs follow-up 30b0c26 |
-| 1C benchmark (.10) | BLOCKED — owner action | gold-set-4.json transfer from generation machine pending (ask_question in TG topic 592) |
-| 1D (report + decision) | NOT STARTED | — |
+| 1C benchmark (.10) | COMPLETE | LongMemEval-S ran end-to-end; recall_any@5=0.338 / @10=0.436; bead 3io.10 closed; USD 0.839 of $1.00 envelope spent |
+| 1D step 1 (recall@{5,10,20,30} + analysis) | COMPLETE — verified + committed | recall_any@{10,20,30} = 0.436/0.566/0.632; far-miss-dominant finding (92 near / 173 far); H1 dilution confirmed ssu/ssp; commits 4226b6e + 5a3eb9a, Codex APPROVE, 363 tests green |
+| 1D step 2 (granularity A/B test) | AWAITING owner budget decision | B1 ~$0.29 (recommended) or B2 ~$0.55–0.65; open-core boundary deferred until granularity result |
 
-**Stand:** dedicated `llmems-litellm` proxy (port 15999, scoped key, $5 hard cap, $0.016 spent total incl. old key). Fully decoupled from shared-dev proxy.
+**Stand:** dedicated `llmems-litellm` proxy (port 15999, scoped key, $5 hard cap, ~$0.84 spent total incl. Phase 1C+1D benchmark runs). Fully decoupled from shared-dev proxy.
 
 **q6l:** CLOSED — revert done, nothing of ours in foreign stack.
 
