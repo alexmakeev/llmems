@@ -4,33 +4,34 @@ Cold-restart pointer. Updated: 2026-06-15.
 
 ## Where We Ended
 
-Phase 1D step 1 DONE, verified, committed.
-- `recall_any@{5,10,20,30}` = 0.338 / 0.436 / 0.566 / 0.632 (LongMemEval-S, 470 scored Qs, 19195 sessions; naive whole-session-embedding FLOOR — not the atomic-mem pipeline).
-- Key finding: FAR-MISS dominant. Extending K 10→30 recovers only ~35% of @10-misses (92 near / 173 far). Majority of weak-category misses (53–80%) sit OUTSIDE top-30 → structural representation problem (granularity/embedding), NOT a ranking-window problem.
-- Worst categories: user-facts (ssu) & preferences (ssp) — ~58–63% lost even at @30 → H1 whole-session dilution confirmed.
-- Commits on main: 4226b6e (re-score + depth-30 persistence), 5a3eb9a (developer role-memory). Both Codex COMMIT_REVIEW APPROVE. qa: 363 tests green, numbers reproduced independently.
+Phase 1D advancing. Step 1 (whole-session re-score @{10,20,30}) done earlier. B1 (round-level granularity PROBE) DONE + committed.
+- Commits: a36d9ef (round-level granularity harness arm: splitRounds/runRoundSeed/CLI + underfetch guard), 5881d2c (dev next.md). Both Codex COMMIT_REVIEW APPROVE. Tests 330 green. B1 spend ~$0.30 (under $0.40 cap).
+- B1 RESULT (same-corpus, clean @10 comparison; round-level = mechanical turn-pairs, NO LLM summarization):
+  · user-facts (ssu): 0.438 → 0.641 (+46%) — ROBUST (n=64). Round granularity fixes dilution for concentrated facts.
+  · preferences (ssp): 0.433 → 0.300 (−31%) — SOFT/NOISE: a 4-question shift, n=30 noise band; only 30 preference Qs in the whole benchmark → UNPROVABLE by scaling here. Do NOT build a thesis on this regression.
+  · overall IE: 0.647 → 0.707 (+0.06).
+- TAKEAWAY (robust): mechanical granularity is TYPE-DEPENDENT — helps concentrated facts, not diffuse signals. NOT a commodity win. The semantic LLM pipeline (segmentation + summarization) is the real lever for diffuse types.
+- MOAT thesis STRENGTHENED: commoditizable mechanical splitting is insufficient alone → value = the closed semantic nucleus. Sharper open-core line: basic granularity+retrieval = MIT commodity; LLM semantic pipeline = closed moat. (Still gate finalization on #6/H5.)
+
+## Active bead
+
+llmems-3io.11 (in_progress).
 
 ## Next Action
 
-Active bead: llmems-3io.11
-
-AWAITING owner budget decision (TG topic 592) on the granularity A/B test (memory sliced per-round):
-- B1 ~$0.29 (recommended) — two worst categories, sharpest H1 test.
-- B2 ~$0.55–0.65 — all categories.
-- hold — stop at current result.
-
-Declared-envelope remainder ~$0.16 < needed → owner must authorize a NEW envelope.
-On B1/B2 → ROTATE developer (rotation-ready, was ~143k; its pointer docs/codebase/next.md) then assign round-level re-seed (fresh contextId) + re-score. On hold → close Phase 1D milestone.
-
-Open-core boundary decision (A) DEFERRED — coupled to the granularity result (do NOT finalize before B1).
+AWAITING owner choice on next experiment (live TG conversation, topic 592):
+1. Multi-resolution union probe (~$0.30, no LLM) — keep BOTH session + round indexes, retrieve union; cheapest type-aware test.
+2. #6/H5 full built-pipeline run ($5–15, needs explicit owner budget envelope) — on-design test: does LLM semantic consolidation rescue diffuse types where mechanical splitting failed.
+Recommended: cheap step 1 first (incremental validation). On owner go → rotate developer fresh (idle, ready) then assign.
+Open-core boundary decision (A) still DEFERRED — gate on #6/H5.
 
 ## Must Read
 
-- `materials/report-phase1d.md` — full analysis + both owner decisions framed
-- `materials/recall-at-k-20260615.md` — numbers + env recipe + corrected magnitude
-- `materials/discovery-phase1d.md` — Phase 1D discovery; cost ladder §4.2
+- `materials/report-phase1d.md` (§9 = B1 read + interpretation)
+- `materials/B1-results-20260615.md` (B1 full table)
+- `materials/recall-at-k-20260615.md` (step-1 numbers + env recipe)
+- `materials/discovery-phase1d.md` (discovery + cost ladder §4.2)
 
 ## State
 
-clean
-Last stable commit: 5a3eb9a (main); team alive (developer rotation-ready/idle, architect+qa-tester+researcher idle). Pre-existing untracked scratch unrelated.
+clean — main at 5881d2c; team alive (developer/architect/qa-tester/researcher idle). Caveats: same-corpus whole-session @20/@30 unavailable (overwritten); ssp permanently n=30-bound.
