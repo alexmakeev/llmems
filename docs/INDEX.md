@@ -89,10 +89,10 @@ Run `bd list` for current status. Live epic:
   - `.11` — **ACTIVE** — Phase 1D: analysis report + decision (scale / `cache_control` / graph-bet for weak categories)
 
 Session 2026-06-12 closures: **llmems-dnh** CLOSED (superseded — external pivot eliminated gold-set dependency); **llmems-wji** CLOSED (runbook incl. §5.5 A/B); **llmems-yn7** CLOSED (dataset verified + pinned); **llmems-mdg** CLOSED (LongMemEval-S adapter implemented); **llmems-o1d** CLOSED (benchmark.md §10 documented); **llmems-3io.10** CLOSED (Phase 1C complete).
+**llmems-q6l** CLOSED (2026-06-11 — full revert executed: our additions removed from oneliner-litellm, stack verified healthy).
 Standalone open: **llmems-a9r** (owner dev-secret rotation pending, not blocking 1D).
 
 New (2026-06-11, Phase 1B fallout):
-- **llmems-q6l** (P1) — ⚠ ops: persist the shared-dev-proxy compose-stack local edits on AM32 (litellm embeddings route + networks fix) into the stack repo — a Dokploy git-redeploy wipes them.
 - **llmems-ork** (P2) — lib: BackgroundIndexer zero-topics path is fully silent (found via smoke 2) — add observability log.
 - **llmems-ns1** (P2) — ci: harness test job (45 offline tests have no enforcing gate).
 - **llmems-7ae** (P3) — harness cleanup (arch-review low findings).
